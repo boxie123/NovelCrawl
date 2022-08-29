@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "NovelCrawl"
+version = "0.1.0"
+description = ""
+authors = ["铂屑 <1824390830@qq.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+httpx = "^0.23.0"
+beautifulsoup4 = "^4.11.1"
+lxml = "^4.9.1"
+
+[tool.poetry.dev-dependencies]
+pytest = "^5.2"
+flake8 = "^5.0.4"
+black = {version = "^22.6.0", allow-prereleases = true}
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[[tool.poetry.source]]
+name = "tsinghua"
+default = true
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
