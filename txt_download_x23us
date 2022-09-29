@@ -7,14 +7,14 @@ from bs4 import BeautifulSoup
 
 import agent
 
-catalogue_url = "https://www.dingdianxsw.com/56/56039/"
+catalogue_url = "https://www.x23us.us/126_126213/"
 headers = {"referer": catalogue_url, "user-agent": agent.get_user_agents()}
 
 
-def mkdir_title(title: str):
-    path = os.path.join("books", title)
-    if not os.path.exists(path):
-        os.makedirs(path)
+def remove_title(title: str):
+    path = os.path.join("books", f"{title}.txt")
+    if os.path.exists(path):
+        os.remove(path)
 
 
 def chineseNumber2Int(strNum: str):
@@ -55,11 +55,12 @@ def chineseNumber2Int(strNum: str):
 
 def get_catalogue_url_list(url):
     resp = httpx.get(url, headers=headers, timeout=None)
-    resp.encoding = "gbk"
+    resp.encoding = "utf-8"
     catalogue_page = resp.text
     catalogue_soup = BeautifulSoup(catalogue_page, "lxml")
     now_title = catalogue_soup.h1.string
-    zhangjie_list = catalogue_soup.find_all("div", class_="zhangjie")
+    zhangjie_box = catalogue_soup.find("div", id="list")
+    zhangjie_list = zhangjie_box.find_all("dd")
     for i in range(len(zhangjie_list)):
         relative_link = zhangjie_list[i].a["href"]
         zhangjie_list[i] = parse.urljoin(url, relative_link)
@@ -68,10 +69,16 @@ def get_catalogue_url_list(url):
 
 def get_novel_content(client, url, novel_title):
     resp = client.get(url, timeout=None)
-    resp.encoding = "gbk"
+    resp.encoding = "utf-8"
     novel_page = resp.text
     novel_soup = BeautifulSoup(novel_page, "lxml")
+    if resp.status_code != 200:
+        print("目标网址访问失败：")
+        raise httpx.ConnectError("\n".join(novel_soup.stripped_strings))
     zhangjie_title = str(novel_soup.h1.string).strip()
+    zhangjie_title_correct = re.compile("囚星天狱")
+    if re.match(zhangjie_title_correct, zhangjie_title):
+        zhangjie_title = zhangjie_title[5:]
     num_pattern = re.compile(r"第(.+?)[章张]")
     title_match = re.match(num_pattern, zhangjie_title)
     if title_match:
@@ -80,7 +87,7 @@ def get_novel_content(client, url, novel_title):
             title_num = chineseNumber2Int(raw_num)
             zhangjie_num = f"第{str(title_num)}章"
             zhangjie_title = zhangjie_title.replace(title_match.group(0), zhangjie_num)
-    novel_text = novel_soup.find(class_="novel_content").get_text()
+    novel_text = novel_soup.find(id="content").get_text()
     txt_write(novel_title, zhangjie_title, novel_text)
 
 
@@ -94,7 +101,7 @@ def txt_write(novel_title, zhangjie_title, novel_text):
 
 def main():
     url_list, novel_title = get_catalogue_url_list(catalogue_url)
-    mkdir_title(novel_title)
+    remove_title(novel_title)
     with httpx.Client(headers=headers) as client:
         for novel_url in url_list:
             get_novel_content(client, novel_url, novel_title)
