@@ -1,4 +1,5 @@
 import re
+from time import sleep
 from urllib import parse
 
 import httpx
@@ -7,8 +8,10 @@ from bs4 import BeautifulSoup
 import agent
 from utils import chineseNumber2Int, remove_title, txt_write
 
-catalogue_url = "https://www.x23us.us/126_126213/"
+catalogue_url = "https://www.ibiquge.la/71/71211/"
 headers = {"referer": catalogue_url, "user-agent": agent.get_user_agents()}
+
+web_name = "_ibiquge"
 
 
 def get_catalogue_url_list(url):
@@ -31,12 +34,11 @@ def get_novel_content(client, url, novel_title):
     novel_page = resp.text
     novel_soup = BeautifulSoup(novel_page, "lxml")
     if resp.status_code != 200:
-        print("目标网址访问失败：")
         raise httpx.ConnectError("\n".join(novel_soup.stripped_strings))
     zhangjie_title = str(novel_soup.h1.string).strip()
-    zhangjie_title_correct = re.compile("囚星天狱")
+    zhangjie_title_correct = re.compile("正文卷")
     if re.match(zhangjie_title_correct, zhangjie_title):
-        zhangjie_title = zhangjie_title[5:]
+        zhangjie_title = zhangjie_title[4:]
     num_pattern = re.compile(r"第(.+?)[章张]")
     title_match = re.match(num_pattern, zhangjie_title)
     if title_match:
@@ -46,15 +48,21 @@ def get_novel_content(client, url, novel_title):
             zhangjie_num = f"第{str(title_num)}章"
             zhangjie_title = zhangjie_title.replace(title_match.group(0), zhangjie_num)
     novel_text = novel_soup.find(id="content").get_text()
-    txt_write(novel_title, zhangjie_title, novel_text)
+    txt_write(novel_title + web_name, zhangjie_title, novel_text)
 
 
 def main():
     url_list, novel_title = get_catalogue_url_list(catalogue_url)
-    remove_title(novel_title)
+    remove_title(novel_title + web_name)
     with httpx.Client(headers=headers) as client:
         for novel_url in url_list:
-            get_novel_content(client, novel_url, novel_title)
+            while True:
+                try:
+                    get_novel_content(client, novel_url, novel_title)
+                    break
+                except httpx.ConnectError as e:
+                    print(e)
+                    sleep(0.5)
 
 
 if __name__ == "__main__":
