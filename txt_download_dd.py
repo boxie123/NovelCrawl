@@ -8,10 +8,10 @@ from bs4 import BeautifulSoup
 import agent
 from utils import chineseNumber2Int, remove_title, txt_write
 
-catalogue_url = "https://www.ibiquge.la/71/71211/"
+catalogue_url = "https://www.gonb.org/27/27159/"
 headers = {"referer": catalogue_url, "user-agent": agent.get_user_agents()}
 
-web_name = "_ibiquge"
+web_name = "_gonb"
 
 
 def get_catalogue_url_list(url):
@@ -47,7 +47,7 @@ def get_novel_content(client, url, novel_title):
             title_num = chineseNumber2Int(raw_num)
             zhangjie_num = f"第{str(title_num)}章"
             zhangjie_title = zhangjie_title.replace(title_match.group(0), zhangjie_num)
-    novel_text = novel_soup.find(id="content").get_text()
+    novel_text = novel_soup.find(id="content").get_text("\n")
     txt_write(novel_title + web_name, zhangjie_title, novel_text)
 
 
