@@ -5,13 +5,14 @@ description = ""
 authors = ["铂屑 <1824390830@qq.com>"]
 
 [tool.poetry.dependencies]
-python = "^3.10"
-httpx = "^0.23.0"
-beautifulsoup4 = "^4.11.1"
-lxml = "^4.9.1"
+python = "~3.11.3"
+lxml = "^4.9.2"
+httpx = "^0.24.1"
+beautifulsoup4 = "^4.12.2"
+soupsieve = "^2.4.1"
+playwright = "^1.35.0"
 
 [tool.poetry.dev-dependencies]
-pytest = "^5.2"
 flake8 = "^5.0.4"
 black = {version = "^22.6.0", allow-prereleases = true}
 
@@ -21,5 +22,5 @@ build-backend = "poetry.core.masonry.api"
 
 [[tool.poetry.source]]
 name = "tsinghua"
-default = true
+priority = "default"
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"

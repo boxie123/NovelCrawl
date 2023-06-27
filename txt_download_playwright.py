@@ -4,6 +4,7 @@ from urllib import parse
 
 import httpx
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, Page
 
 import agent
 from utils import chineseNumber2Int, remove_title, txt_write
@@ -17,28 +18,20 @@ headers = {
 web_name = "_biququ"
 
 
-def get_catalogue_url_list(url):
-    resp = httpx.get(url, headers=headers, timeout=None)
-    resp.encoding = "utf-8"
-    catalogue_page = resp.text
-    catalogue_soup = BeautifulSoup(catalogue_page, "lxml")
+def get_catalogue_url_list(content):
+    catalogue_soup = BeautifulSoup(content, "lxml")
     # print(catalogue_soup)
     now_title = catalogue_soup.h1.string
     zhangjie_box = catalogue_soup.find("div", id="list")
     zhangjie_list = zhangjie_box.find_all("dd")
     for i in range(len(zhangjie_list)):
         relative_link = zhangjie_list[i].a["href"]
-        zhangjie_list[i] = parse.urljoin(url, relative_link)
-    return zhangjie_list, str(now_title)
+        zhangjie_list[i] = parse.urljoin(catalogue_url, relative_link)
+    return zhangjie_list, now_title
 
 
-def get_novel_content(client, url, novel_title):
-    resp = client.get(url, timeout=None)
-    resp.encoding = "utf-8"
-    novel_page = resp.text
+def get_novel_content(novel_page, novel_title):
     novel_soup = BeautifulSoup(novel_page, "lxml")
-    if resp.status_code != 200:
-        raise httpx.ConnectError("\n".join(novel_soup.stripped_strings))
     zhangjie_title = str(novel_soup.h1.string).strip()
     zhangjie_title_correct = re.compile("正文卷")
     if re.match(zhangjie_title_correct, zhangjie_title):
@@ -51,23 +44,43 @@ def get_novel_content(client, url, novel_title):
             title_num = chineseNumber2Int(raw_num)
             zhangjie_num = f"第{str(title_num)}章"
             zhangjie_title = zhangjie_title.replace(title_match.group(0), zhangjie_num)
-    novel_text = novel_soup.find(id="content").get_text("\n")
+    novel_text_list = novel_soup.select("div#content>p")
+    novel_text = ""
+    for novel_tag in novel_text_list:
+        novel_text = "\n".join((novel_text, novel_tag.get_text()))
+        
+    novel_text += "\n\n"
     txt_write(novel_title + web_name, zhangjie_title, novel_text)
 
 
-def main():
-    url_list, novel_title = get_catalogue_url_list(catalogue_url)
-    remove_title(novel_title + web_name)
-    with httpx.Client(headers=headers) as client:
-        for novel_url in url_list:
-            while True:
-                try:
-                    get_novel_content(client, novel_url, novel_title)
-                    break
-                except httpx.ConnectError as e:
-                    print(e)
-                    sleep(0.5)
+def get_page_content(page: Page, url: str):
+    resp = page.goto(url)
+    if resp.status != 200:
+        raise httpx.ConnectError
+    page.wait_for_load_state('domcontentloaded')
+    content = page.content()
+    return content
 
+
+def main():
+    p = sync_playwright().start()
+    browser = p.chromium.launch()
+    page = browser.new_page()
+    
+    content = get_page_content(page, catalogue_url)
+    url_list, novel_title = get_catalogue_url_list(content)
+    remove_title(novel_title + web_name)
+    for novel_url in url_list:
+        while True:
+            try:
+                novel_page = get_page_content(page, novel_url)
+                get_novel_content(novel_page, novel_title)
+                break
+            except httpx.ConnectError as e:
+                print(e)
+                sleep(0.5)
+    browser.close()
+    p.stop()
 
 if __name__ == "__main__":
     main()

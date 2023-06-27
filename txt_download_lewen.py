@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from agent_pc import get_user_agents
 from utils import chineseNumber2Int, remove_title, txt_write
 
-catalogue_url = "https://www.lwxstxt.org/110/110535/"
+catalogue_url = "https://www.lwxstxt.org/110/110473/"
 headers = {
     "referer": catalogue_url,
     "user-agent": get_user_agents(),
@@ -39,8 +39,9 @@ def get_novel_content(client, url, novel_title):
     if resp.status_code != 200:
         raise httpx.ConnectError("\n".join(novel_soup.stripped_strings))
     zhangjie_title = novel_soup.find("div", class_="panel-heading").string
-    num_pattern = re.compile(r"第(.+?)[章张]")
+    num_pattern = re.compile(r" 第(.+?)[章张]")
     num_pattern2 = re.compile(r" (\d+?)[章张]")
+    num_pattern3 = re.compile(r" (\d+?) ")
     title_match = re.match(num_pattern, zhangjie_title)
     if title_match:
         raw_num = title_match.group(1)
@@ -50,6 +51,9 @@ def get_novel_content(client, url, novel_title):
             zhangjie_title = zhangjie_title.replace(title_match.group(0), zhangjie_num)
     elif re.match(num_pattern2, zhangjie_title):
         zhangjie_title = zhangjie_title.replace(" ", "第", 1)
+    elif re.match(num_pattern3, zhangjie_title):
+        zhangjie_title = zhangjie_title.replace(" ", "第", 1)
+        zhangjie_title = zhangjie_title.replace(" ", "章 ", 1)
     novel_text = novel_soup.find(
         "div", class_="panel-body content-body content-ext"
     ).get_text("\n")
