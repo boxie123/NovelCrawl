@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 
 def chineseNumber2Int(strNum: str):
@@ -41,8 +42,12 @@ def remove_title(title: str):
 
 
 def txt_write(novel_title, zhangjie_title, novel_text):
-    path = os.path.join("books", f"{novel_title}.txt")
-    with open(path, "a", encoding="utf-8") as f:
+    book_dir_path = Path(os.path.join(".", "books")).resolve()
+    if not book_dir_path.exists():
+        os.makedirs(str(book_dir_path))
+
+    file_path = book_dir_path.joinpath(f"{novel_title}.txt")
+    with open(file_path, "a", encoding="utf-8") as f:
         f.write(f"{zhangjie_title}\n")
         f.write(novel_text)
     print(zhangjie_title)

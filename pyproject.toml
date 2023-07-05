@@ -7,9 +7,7 @@ authors = ["铂屑 <1824390830@qq.com>"]
 [tool.poetry.dependencies]
 python = "~3.11.3"
 lxml = "^4.9.2"
-httpx = "^0.24.1"
 beautifulsoup4 = "^4.12.2"
-soupsieve = "^2.4.1"
 playwright = "^1.35.0"
 
 [tool.poetry.group.dev.dependencies]
