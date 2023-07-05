@@ -3,37 +3,34 @@ import os
 
 def chineseNumber2Int(strNum: str):
     result = 0
-    temp = 1  # 存放一个单位的数字如：十万
-    count = 0  # 判断是否有chArr
-    cnArr = ["一", "二", "三", "四", "五", "六", "七", "八", "九"]
-    chArr = ["十", "百", "千", "万", "亿"]
+    cnArr = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+             "〇": 0, "壹": 1, "贰": 2, "叁": 3, "肆": 4, "伍": 5, "陆": 6, "柒": 7, "捌": 8, "玖": 9, "两": 2}
+
+    chArr = {"十": 10, "百": 100, "千": 1000, "拾": 10, "佰": 100, "仟": 1000}
+    magArr = {"万": 10000, "亿": 100000000}
+
+    # 判断是否是简写法, 如"一三三"
+    result_str = ""
     for i in range(len(strNum)):
-        b = True
         c = strNum[i]
-        for j in range(len(cnArr)):
-            if c == cnArr[j]:
-                if count != 0:
-                    result += temp
-                    count = 0
-                temp = j + 1
-                b = False
-                break
-        if b:
-            for j in range(len(chArr)):
-                if c == chArr[j]:
-                    if j == 0:
-                        temp *= 10
-                    elif j == 1:
-                        temp *= 100
-                    elif j == 2:
-                        temp *= 1000
-                    elif j == 3:
-                        temp *= 10000
-                    elif j == 4:
-                        temp *= 100000000
-                count += 1
+        if c in chArr:
+            break
+        elif c in cnArr:
+            result_str += str(cnArr[c])
+    else:
+        return int(result_str)
+
+    # 正常写法
+    for i in range(len(strNum)):
+        c = strNum[i]
+        c_num = cnArr.get(c, 0)
         if i == len(strNum) - 1:
-            result += temp
+            return result + c_num
+        ch = chArr.get(strNum[i + 1], 1)
+        magni = magArr.get(strNum[i + 1], 1)
+        c_num = c_num * ch
+        result = (result + c_num) * magni
+
     return result
 
 

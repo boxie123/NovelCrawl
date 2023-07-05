@@ -11,8 +11,12 @@ from utils import chineseNumber2Int, remove_title, txt_write
 def get_catalogue_url_list(catalogue_url, content, selector="div#list dd"):
     catalogue_soup = BeautifulSoup(content, "lxml")
     # print(catalogue_soup)
-    now_title = catalogue_soup.h1.string
+    try:
+        now_title = catalogue_soup.h1.string
+    except AttributeError:
+        now_title = input("获取小说名失败, 请手动输入:")
     zhangjie_list = catalogue_soup.select(selector)
+    print(f"共获取到 {len(zhangjie_list)} 章小说链接, 开始爬取")
     for i in range(len(zhangjie_list)):
         relative_link = zhangjie_list[i].a["href"]
         zhangjie_list[i] = parse.urljoin(catalogue_url, relative_link)
@@ -25,14 +29,14 @@ def get_novel_content(novel_page, novel_title, selector="div#content>p"):
     zhangjie_title_correct = re.compile("正文卷")
     if re.match(zhangjie_title_correct, zhangjie_title):
         zhangjie_title = zhangjie_title[4:]
-    num_pattern = re.compile(r"第(.+?)[章张]")
+    num_pattern = re.compile(r"^\s?第?([0-9一二三四五六七八九十百千万亿零壹贰叁肆伍陆柒捌玖拾佰仟]+)[章张]{0,1}")
     title_match = re.match(num_pattern, zhangjie_title)
     if title_match:
         raw_num = title_match.group(1)
         if not raw_num.isdecimal():
-            title_num = chineseNumber2Int(raw_num)
-            zhangjie_num = f"第{str(title_num)}章"
-            zhangjie_title = zhangjie_title.replace(title_match.group(0), zhangjie_num)
+            raw_num = chineseNumber2Int(raw_num)
+        zhangjie_num = f"第{str(raw_num)}章"
+        zhangjie_title = zhangjie_title.replace(title_match.group(0), zhangjie_num)
     novel_text_list = novel_soup.select(selector)
     novel_text = ""
     for novel_tag in novel_text_list:
@@ -42,10 +46,10 @@ def get_novel_content(novel_page, novel_title, selector="div#content>p"):
     txt_write(novel_title + web_name, zhangjie_title, novel_text)
 
 
-def get_page_content(page: Page, url: str):
+def get_page_content(page: Page, url: str, wait_until: str = "domcontentloaded"):
     resp = page.goto(url)
     assert resp.status == 200
-    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_load_state(wait_until)
     content = page.content()
     return content
 
@@ -53,9 +57,11 @@ def get_page_content(page: Page, url: str):
 def main(catalogue_url, catalogue_selector="div#list dd", novel_selector="div#content>p"):
     p = sync_playwright().start()
     browser = p.chromium.launch()
-    page = browser.new_page()
+    # browser = p.chromium.launch(headless=False)
+    context = browser.new_context(java_script_enabled=True, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+    page = context.new_page()
 
-    content = get_page_content(page, catalogue_url)
+    content = get_page_content(page, catalogue_url, "networkidle")
     url_list, novel_title = get_catalogue_url_list(catalogue_url, content, catalogue_selector)
     remove_title(novel_title + web_name)
     for novel_url in url_list:
