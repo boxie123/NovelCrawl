@@ -36,7 +36,7 @@ def chineseNumber2Int(strNum: str):
 
 
 def remove_title(title: str):
-    path = os.path.join("books", f"{title}.txt")
+    path = os.path.join(".", "books", f"{title}.txt")
     if os.path.exists(path):
         os.remove(path)
 

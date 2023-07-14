@@ -42,6 +42,11 @@ def get_novel_content(novel_page, novel_title, selector="div#content>p"):
     for novel_tag in novel_text_list:
         novel_text = "\n    ".join((novel_text, novel_tag.get_text()))
 
+    text_pattern = re.compile("正在手打中，请稍等片刻，内容更新后，请重新刷新页面，即可获取最新更新！")
+    if len(novel_text) < 400 and re.search(text_pattern, novel_text):
+        print(f"已跳过: {zhangjie_title}")
+        return
+
     novel_text += "\n\n"
     txt_write(novel_title + web_name, zhangjie_title, novel_text)
 
@@ -54,7 +59,7 @@ def get_page_content(page: Page, url: str, wait_until: str = "domcontentloaded")
     return content
 
 
-def main(catalogue_url, catalogue_selector="div#list dd", novel_selector="div#content>p"):
+def main(catalogue_url, start_num=0, catalogue_selector="div#list dd", novel_selector="div#content>p"):
     p = sync_playwright().start()
     browser = p.chromium.launch()
     # browser = p.chromium.launch(headless=False)
@@ -64,7 +69,7 @@ def main(catalogue_url, catalogue_selector="div#list dd", novel_selector="div#co
     content = get_page_content(page, catalogue_url, "networkidle")
     url_list, novel_title = get_catalogue_url_list(catalogue_url, content, catalogue_selector)
     remove_title(novel_title + web_name)
-    for novel_url in url_list:
+    for novel_url in url_list[start_num:]:
         while True:
             try:
                 novel_page = get_page_content(page, novel_url)
@@ -79,8 +84,14 @@ def main(catalogue_url, catalogue_selector="div#list dd", novel_selector="div#co
 
 if __name__ == "__main__":
     catalogue_url = input("请输入小说目录的url：") or "https://www.biququ.info/html/61746/"
+    start_num = input("从第几章开始爬取(直接回车默认从头开始):")
+    if start_num.isdigit():
+        start_num = int(start_num)
+    else:
+        start_num = 0
     global web_name
     web_name = "_" + parse.urlparse(catalogue_url).netloc.split(".")[-2]
     catalogue_selector = input("catalogue_selector:(直接回车默认为div#list dd)") or "div#list dd"
     novel_selector = input("novel_selector:(直接回车默认为div#content>p)") or "div#content>p"
-    main(catalogue_url, catalogue_selector, novel_selector)
+    main(catalogue_url, start_num, catalogue_selector, novel_selector)
+    input()
