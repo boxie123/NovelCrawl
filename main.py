@@ -1,9 +1,9 @@
 import re
-from time import sleep
+import asyncio
 from urllib import parse
 
 from bs4 import BeautifulSoup
-from playwright.sync_api import Page, sync_playwright
+from playwright.async_api import BrowserContext, async_playwright
 
 from utils import chineseNumber2Int, remove_title, txt_write
 
@@ -16,7 +16,7 @@ def get_catalogue_url_list(catalogue_url, content, selector="div#list dd"):
     except AttributeError:
         now_title = input("获取小说名失败, 请手动输入:")
     zhangjie_list = catalogue_soup.select(selector)
-    print(f"共获取到 {len(zhangjie_list)} 章小说链接, 开始爬取")
+    print(f"共获取到 {len(zhangjie_list)} 章小说链接")
     for i in range(len(zhangjie_list)):
         relative_link = zhangjie_list[i].a["href"]
         zhangjie_list[i] = parse.urljoin(catalogue_url, relative_link)
@@ -42,7 +42,7 @@ def get_novel_content(novel_page, novel_title, selector="div#content>p"):
     for novel_tag in novel_text_list:
         novel_text = "\n    ".join((novel_text, novel_tag.get_text()))
 
-    text_pattern = re.compile("正在手打中，请稍等片刻，内容更新后，请重新刷新页面，即可获取最新更新！")
+    text_pattern = re.compile("(正在手打中，请稍等片刻，内容更新后，请重新刷新页面，即可获取最新更新！)|(网页版章节内容慢)")
     if len(novel_text) < 400 and re.search(text_pattern, novel_text):
         print(f"已跳过: {zhangjie_title}")
         return
@@ -51,35 +51,40 @@ def get_novel_content(novel_page, novel_title, selector="div#content>p"):
     txt_write(novel_title + web_name, zhangjie_title, novel_text)
 
 
-def get_page_content(page: Page, url: str, wait_until: str = "domcontentloaded"):
-    resp = page.goto(url)
+async def get_page_content(context: BrowserContext, url: str, wait_until: str = "domcontentloaded"):
+    page = await context.new_page()
+    resp = await page.goto(url)
     assert resp.status == 200
-    page.wait_for_load_state(wait_until)
-    content = page.content()
+    await page.wait_for_load_state(wait_until)
+    content = await page.content()
+    await page.close()
     return content
 
 
-def main(catalogue_url, start_num=0, catalogue_selector="div#list dd", novel_selector="div#content>p"):
-    p = sync_playwright().start()
-    browser = p.chromium.launch()
+async def main(catalogue_url, start_num=0, catalogue_selector="div#list dd", novel_selector="div#content>p"):
+    print("无头浏览器启动中")
+    p = await async_playwright().start()
+    browser = await p.chromium.launch()
     # browser = p.chromium.launch(headless=False)
-    context = browser.new_context(java_script_enabled=True, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
-    page = context.new_page()
+    context = await browser.new_context(java_script_enabled=True, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+    context.set_default_timeout(30000.00)
 
-    content = get_page_content(page, catalogue_url, "networkidle")
+    print("开始获取小说目录列表")
+    content = await get_page_content(context, catalogue_url, "networkidle")
     url_list, novel_title = get_catalogue_url_list(catalogue_url, content, catalogue_selector)
+
     remove_title(novel_title + web_name)
-    for novel_url in url_list[start_num:]:
-        while True:
-            try:
-                novel_page = get_page_content(page, novel_url)
-                get_novel_content(novel_page, novel_title, novel_selector)
-                break
-            except AssertionError as e:
-                print(e)
-                sleep(0.5)
-    browser.close()
-    p.stop()
+    async with asyncio.TaskGroup() as tg:
+        tasks_list = [tg.create_task(get_page_content(context, novel_url)) for novel_url in url_list[start_num:]]
+        print("开始爬取小说内容")
+
+    print("爬取成功, 正在写入文件")
+    for task in tasks_list:
+        get_novel_content(task.result(), novel_title, novel_selector)
+
+    await browser.close()
+    await p.stop()
+    print("无头浏览器已关闭")
 
 
 if __name__ == "__main__":
@@ -93,5 +98,5 @@ if __name__ == "__main__":
     web_name = "_" + parse.urlparse(catalogue_url).netloc.split(".")[-2]
     catalogue_selector = input("catalogue_selector:(直接回车默认为div#list dd)") or "div#list dd"
     novel_selector = input("novel_selector:(直接回车默认为div#content>p)") or "div#content>p"
-    main(catalogue_url, start_num, catalogue_selector, novel_selector)
-    input()
+    asyncio.run(main(catalogue_url, start_num, catalogue_selector, novel_selector))
+    input("\n\n爬取成功结束, 回车退出")
