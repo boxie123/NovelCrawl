@@ -153,4 +153,4 @@ cython_debug/
 *.txt
 *.cmd
 books/
-test.py
+test_*.py

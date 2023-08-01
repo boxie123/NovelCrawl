@@ -13,6 +13,7 @@ playwright = "^1.35.0"
 [tool.poetry.group.dev.dependencies]
 flake8 = "^6.0.0"
 black = {version = "^23.3.0", allow-prereleases = true}
+pytest = "^7.4.0"
 
 
 [[tool.poetry.source]]

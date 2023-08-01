@@ -7,6 +7,8 @@ from playwright.async_api import BrowserContext, async_playwright
 
 from utils import chineseNumber2Int, remove_title, txt_write
 
+web_name = ""
+
 
 def get_catalogue_url_list(catalogue_url, content, selector="div#list dd"):
     catalogue_soup = BeautifulSoup(content, "lxml")
@@ -23,7 +25,7 @@ def get_catalogue_url_list(catalogue_url, content, selector="div#list dd"):
     return zhangjie_list, now_title
 
 
-def get_novel_content(novel_page, novel_title, selector="div#content>p"):
+def get_novel_content(novel_page, novel_title, selector="div#content"):
     novel_soup = BeautifulSoup(novel_page, "lxml")
     zhangjie_title = str(novel_soup.h1.string).strip()
     zhangjie_title_correct = re.compile("正文卷")
@@ -37,10 +39,18 @@ def get_novel_content(novel_page, novel_title, selector="div#content>p"):
             raw_num = chineseNumber2Int(raw_num)
         zhangjie_num = f"第{str(raw_num)}章"
         zhangjie_title = zhangjie_title.replace(title_match.group(0), zhangjie_num)
-    novel_text_list = novel_soup.select(selector)
-    novel_text = ""
-    for novel_tag in novel_text_list:
-        novel_text = "\n    ".join((novel_text, novel_tag.get_text()))
+    novel_content_tag_list = novel_soup.select(selector)
+    if len(novel_content_tag_list) > 0:
+        novel_content_tag = novel_soup.select(selector)[0]
+    else:
+        print(f"{zhangjie_title} 不存在 {selector}")
+        print(novel_soup)
+        return
+    novel_content_tag = novel_soup.select(selector)[0]
+    for extract_element in novel_content_tag.find_all("div"):
+        extract_element.extract()
+
+    novel_text = novel_content_tag.get_text("\n\t", strip=True)
 
     text_pattern = re.compile("(正在手打中，请稍等片刻，内容更新后，请重新刷新页面，即可获取最新更新！)|(网页版章节内容慢)")
     if len(novel_text) < 400 and re.search(text_pattern, novel_text):
@@ -52,21 +62,30 @@ def get_novel_content(novel_page, novel_title, selector="div#content>p"):
 
 
 async def get_page_content(context: BrowserContext, url: str, wait_until: str = "domcontentloaded"):
-    page = await context.new_page()
-    resp = await page.goto(url)
-    assert resp.status == 200
+    for _ in range(5):
+        page = await context.new_page()
+        resp = await page.goto(url)
+        if resp.status == 200:
+            break
+        await page.close()
+        await asyncio.sleep(5.0)
+    else:
+        raise TimeoutError(f"{url}获取失败")
     await page.wait_for_load_state(wait_until)
     content = await page.content()
     await page.close()
     return content
 
 
-async def main(catalogue_url, start_num=0, catalogue_selector="div#list dd", novel_selector="div#content>p"):
+async def main(catalogue_url, start_num=0, catalogue_selector="div#list dd", novel_selector="div#content"):
     print("无头浏览器启动中")
     p = await async_playwright().start()
     browser = await p.chromium.launch()
     # browser = p.chromium.launch(headless=False)
-    context = await browser.new_context(java_script_enabled=True, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+    context = await browser.new_context(
+        java_script_enabled=True,
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+    )
     context.set_default_timeout(30000.00)
 
     print("开始获取小说目录列表")
@@ -94,9 +113,8 @@ if __name__ == "__main__":
         start_num = int(start_num)
     else:
         start_num = 0
-    global web_name
     web_name = "_" + parse.urlparse(catalogue_url).netloc.split(".")[-2]
     catalogue_selector = input("catalogue_selector:(直接回车默认为div#list dd)") or "div#list dd"
-    novel_selector = input("novel_selector:(直接回车默认为div#content>p)") or "div#content>p"
+    novel_selector = input("novel_selector:(直接回车默认为div#content)") or "div#content"
     asyncio.run(main(catalogue_url, start_num, catalogue_selector, novel_selector))
     input("\n\n爬取成功结束, 回车退出")
