@@ -4,7 +4,6 @@ from urllib import parse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, async_playwright
-
 from utils import chineseNumber2Int, remove_title, txt_write
 
 web_name = ""
@@ -62,16 +61,17 @@ def get_novel_content(novel_page, novel_title, selector="div#content"):
 
 
 async def get_page_content(context: BrowserContext, url: str, wait_until: str = "domcontentloaded"):
+    page = await context.new_page()
     for _ in range(5):
-        page = await context.new_page()
-        resp = await page.goto(url)
+        try:
+            resp = await page.goto(url, wait_until=wait_until)
+        except TimeoutError:
+            continue
         if resp.status == 200:
             break
-        await page.close()
         await asyncio.sleep(5.0)
     else:
         raise TimeoutError(f"{url}获取失败")
-    await page.wait_for_load_state(wait_until)
     content = await page.content()
     await page.close()
     return content
@@ -86,20 +86,27 @@ async def main(catalogue_url, start_num=0, catalogue_selector="div#list dd", nov
         java_script_enabled=True,
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
     )
-    context.set_default_timeout(30000.00)
+    context.set_default_timeout(300000.00)
 
     print("开始获取小说目录列表")
-    content = await get_page_content(context, catalogue_url, "networkidle")
+    content = await get_page_content(context, catalogue_url)
     url_list, novel_title = get_catalogue_url_list(catalogue_url, content, catalogue_selector)
 
     remove_title(novel_title + web_name)
-    async with asyncio.TaskGroup() as tg:
-        tasks_list = [tg.create_task(get_page_content(context, novel_url)) for novel_url in url_list[start_num:]]
-        print("开始爬取小说内容")
 
-    print("爬取成功, 正在写入文件")
-    for task in tasks_list:
-        get_novel_content(task.result(), novel_title, novel_selector)
+    loop_num = 100
+    for i in range(len(url_list[start_num:]) // loop_num + 1):
+        async with asyncio.TaskGroup() as tg:
+            tasks_list = [
+                tg.create_task(get_page_content(context, novel_url))
+                for novel_url in url_list[start_num + i * loop_num: start_num + (i + 1) * loop_num]
+            ]
+            print("开始爬取小说内容")
+
+        print(f"爬取成功 {loop_num} 章, 正在写入文件")
+        for task in tasks_list:
+            get_novel_content(task.result(), novel_title, novel_selector)
+        await asyncio.sleep(5.0)
 
     await browser.close()
     await p.stop()
