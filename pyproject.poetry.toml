@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "NovelCrawl"
+version = "0.1.0"
+description = ""
+authors = ["铂屑 <1824390830@qq.com>"]
+
+[tool.poetry.dependencies]
+python = "~3.11.3"
+lxml = "^4.9.2"
+beautifulsoup4 = "^4.12.2"
+playwright = "^1.35.0"
+
+[tool.poetry.group.dev.dependencies]
+flake8 = "^6.0.0"
+black = {version = "^23.3.0", allow-prereleases = true}
+pytest = "^7.4.0"
+
+
+[[tool.poetry.source]]
+name = "PyPI"
+priority = "primary"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

@@ -154,3 +154,4 @@ cython_debug/
 *.cmd
 books/
 test_*.py
+.idea/
