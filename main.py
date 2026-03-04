@@ -1,12 +1,14 @@
 import re
 import asyncio
+from math import ceil
 from typing import List, Dict
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, async_playwright
 from utils import chineseNumber2Int, remove_title, txt_write
-from page_config import match_url
+
+import page_config
 
 web_name = ""
 
@@ -117,6 +119,9 @@ async def get_novel_page_content(
         "title": novel_info.get("title")
     })
 
+    if novel_btn_selector == "":
+        return content_list
+
     soup = BeautifulSoup(content, "lxml")
     novel_btn = soup.select(novel_btn_selector)
     if len(novel_btn) > 0:
@@ -149,6 +154,9 @@ async def get_catalogue_page_content(
     content = await page_goto(page, url, wait_until)
     content_list.append(content)
 
+    if catalogue_btn_selector == "":
+        return content_list
+
     soup = BeautifulSoup(content, "lxml")
     catalogue_btn = soup.select(catalogue_btn_selector)
     if len(catalogue_btn) > 0:
@@ -179,8 +187,8 @@ async def main():
 
     remove_title(novel_title + web_name)
 
-    loop_num = 100
-    for i in range(len(url_list[start_num:]) // loop_num + 1):
+    loop_num = page_config.PRE_LOOP_NUM
+    for i in range(ceil(len(url_list[start_num:]) / loop_num)):
         async with asyncio.TaskGroup() as tg:
             tasks_list = [
                 tg.create_task(get_novel_page_content(context, novel_url))
@@ -191,7 +199,7 @@ async def main():
         print(f"爬取成功 {len(tasks_list)} 章, 正在写入文件")
         for task in tasks_list:
             get_novel_content(task.result(), novel_title)
-        await asyncio.sleep(5.0)
+        await asyncio.sleep(page_config.PRE_LOOP_WAIT_TIME)
 
     await browser.close()
     await p.stop()
@@ -199,20 +207,20 @@ async def main():
 
 
 if __name__ == "__main__":
-    catalogue_url = input("请输入小说目录的url：") or "https://www.22biqu.com/biqu81101/"
+    catalogue_url = input("请输入小说目录的url：") or "https://www.sudugu.org/54/"
     start_num = input("从第几章开始爬取(直接回车默认从头开始):")
     if start_num.isdigit():
         start_num = int(start_num)
     else:
         start_num = 0
     web_name = "_" + urlparse(catalogue_url).netloc.split(".")[-2]
-    page_c = match_url(catalogue_url)
+    page_c = page_config.match_url(catalogue_url)
     if page_c:
         catalogue_selector = page_c["catalogue_selector"]
         novel_selector = page_c["novel_selector"]
-        catalogue_btn_selector = page_c["catalogue_btn"] or "a.index-container-btn"
+        catalogue_btn_selector = page_c["catalogue_btn"]
         catalogue_title_selector = page_c["catalogue_title"]
-        novel_btn_selector = page_c["novel_btn"] or "div.section-opt.m-bottom-opt a"
+        novel_btn_selector = page_c["novel_btn"]
         if not (catalogue_selector and novel_selector and catalogue_title_selector):
             raise ValueError("选择器为空")
     else:
