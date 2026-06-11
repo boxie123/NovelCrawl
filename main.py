@@ -19,6 +19,14 @@ web_name = ""
 
 
 def get_catalogue_url_list(content_list):
+    """从目录页 HTML 列表中提取章节标题和 URL。
+
+    Args:
+        content_list: 目录页 HTML 内容列表，每项为一个页面的 HTML 字符串。
+
+    Returns:
+        tuple[List[Dict], str]: 章节信息列表和小说名。每章包含 href（绝对 URL）和 title。
+    """
     now_title = ""
     zhangjie_list = []
     for i in range(len(content_list)):
@@ -49,6 +57,15 @@ def get_catalogue_url_list(content_list):
 
 
 def get_novel_content(novel_page_list, novel_title) -> bool:
+    """解析章节正文并写入 TXT 文件。
+
+    Args:
+        novel_page_list: 页面内容列表，每项含 content（HTML）和 title（章节标题）。
+        novel_title: 小说名，用于生成文件名。
+
+    Returns:
+        bool: True 表示成功写入，False 表示跳过（正文为空/选择器未匹配/风控拦截）。
+    """
     novel_text = ""
     zhangjie_title = ""
     for i in range(len(novel_page_list)):
@@ -92,6 +109,19 @@ def get_novel_content(novel_page_list, novel_title) -> bool:
 
 
 async def page_goto(page, url, wait_until: str = "domcontentloaded") -> str:
+    """导航至目标 URL 并返回页面 HTML，失败时自动重试 5 次。
+
+    Args:
+        page: Playwright Page 对象。
+        url: 目标 URL。
+        wait_until: Playwright 的 wait_until 策略，默认 "domcontentloaded"。
+
+    Returns:
+        str: 页面 HTML 内容。
+
+    Raises:
+        TimeoutError: 5 次重试均失败。
+    """
     for _ in range(5):
         try:
             resp = await page.goto(url, wait_until=wait_until)
@@ -112,6 +142,20 @@ async def get_novel_page_content(
         content_list = None,
         page = None,
 ) -> List[Dict[str, str]]:
+    """爬取单个章节的正文内容，支持翻页。
+
+    首次调用时创建新 Page，递归翻页时复用同一个 Page。
+
+    Args:
+        context: Playwright BrowserContext。
+        novel_info: 含 href（章节 URL）和 title（章节标题）的字典。
+        wait_until: Page 加载策略。
+        content_list: 递归传递的内容累积列表，首次调用勿传。
+        page: 递归传递的 Page 对象，首次调用勿传。
+
+    Returns:
+        List[Dict]: 每项含 content（HTML）和 title，对应章节的各页内容。
+    """
     if content_list is None:
         content_list = []
     if page is None:
@@ -154,6 +198,21 @@ async def get_catalogue_page_content(
         content_list = None,
         page = None,
 ) -> List[str]:
+    """爬取目录页 HTML，支持翻页。
+
+    首次调用时创建新 Page，递归翻页时复用同一个 Page。
+    遇到 javascript:void(0); 时停止翻页。
+
+    Args:
+        context: Playwright BrowserContext。
+        url: 目录页 URL。
+        wait_until: Page 加载策略。
+        content_list: 递归传递的内容累积列表，首次调用勿传。
+        page: 递归传递的 Page 对象，首次调用勿传。
+
+    Returns:
+        List[str]: 各目录页的 HTML 字符串列表。
+    """
     if content_list is None:
         content_list = []
     if page is None:
@@ -183,6 +242,7 @@ async def get_catalogue_page_content(
 
 
 async def main():
+    """入口协程：启动浏览器 → 爬目录 → 批量并发爬正文 → 写文件 → 清理资源。"""
     print("无头浏览器启动中")
     p = await async_playwright().start()
     browser = await p.chromium.launch()

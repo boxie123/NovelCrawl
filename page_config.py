@@ -57,6 +57,14 @@ PRE_LOOP_WAIT_TIME = 10.0
 
 
 def match_url(catalogue_url: str) -> Union[Dict[str, Union[List[str], str]], None]:
+    """根据目录 URL 匹配预设的站点选择器配置。
+
+    Args:
+        catalogue_url: 小说目录页 URL。
+
+    Returns:
+        Dict 或 None: 匹配到的站点配置字典，未匹配返回 None。
+    """
     url = urlparse(catalogue_url)
     domain = url.netloc
     for i in range(len(PAGE_CONFIG)):
