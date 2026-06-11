@@ -1,12 +1,21 @@
 import re
 import asyncio
 from math import ceil
-from typing import List, Dict
+from typing import List, Dict, Optional
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
-from playwright.async_api import BrowserContext, async_playwright
-from playwright_stealth import stealth_async
+from playwright.async_api import BrowserContext, TimeoutError as PlaywrightTimeoutError, async_playwright
+try:
+    from playwright_stealth import stealth_async
+except ImportError:
+    from playwright_stealth import Stealth
+
+    _stealth = Stealth()
+
+    async def stealth_async(page):
+        await _stealth.apply_stealth_async(page)
+
 from utils import chineseNumber2Int, remove_title, txt_write
 
 import page_config
@@ -14,6 +23,7 @@ import page_config
 VOLUME_PATTERN = re.compile("正文卷")
 CHAPTER_NUM_PATTERN = re.compile(r"^\s?第?([0-9一二三四五六七八九十百千万亿零壹贰叁肆伍陆柒捌玖拾佰仟]+)[章张]{0,1}")
 SKIP_PATTERN = re.compile("(正在手打中，请稍等片刻，内容更新后，请重新刷新页面，即可获取最新更新！)|(网页版章节内容慢)")
+BLOCK_RESOURCE_TYPES = {"image", "font", "media", "stylesheet"}
 
 web_name = ""
 
@@ -56,44 +66,48 @@ def get_catalogue_url_list(content_list):
     return zhangjie_list_href, now_title
 
 
-def get_novel_content(novel_page_list, novel_title) -> bool:
+def normalize_chapter_title(zhangjie_title: str) -> str:
+    """规范化章节标题中的章节号。"""
+    if re.match(VOLUME_PATTERN, zhangjie_title):
+        zhangjie_title = re.sub(r'^正文卷\s*', '', zhangjie_title)
+    title_match = re.match(CHAPTER_NUM_PATTERN, zhangjie_title)
+    if title_match:
+        raw_num = title_match.group(1)
+        if not raw_num.isdecimal():
+            raw_num = chineseNumber2Int(raw_num)
+        zhangjie_num = f"第{str(raw_num)}章"
+        zhangjie_title = zhangjie_title.replace(title_match.group(0), zhangjie_num)
+    return zhangjie_title
+
+
+def get_page_novel_text(content: str, zhangjie_title: str) -> Optional[str]:
+    """从单页章节 HTML 中提取正文文本。"""
+    novel_soup = BeautifulSoup(content, "lxml")
+    novel_content_tag_list = novel_soup.select(novel_selector)
+    if novel_content_tag_list:
+        novel_content_tag = novel_content_tag_list[0]
+    else:
+        print(f"{zhangjie_title} 不存在 {novel_selector}")
+        return None
+
+    for extract_element in novel_content_tag.find_all("div"):
+        extract_element.extract()
+
+    return novel_content_tag.get_text("\n\t", strip=True)
+
+
+def get_novel_content(novel_content, novel_title) -> bool:
     """解析章节正文并写入 TXT 文件。
 
     Args:
-        novel_page_list: 页面内容列表，每项含 content（HTML）和 title（章节标题）。
+        novel_content: 章节内容字典，含 title（章节标题）和 text（正文文本）。
         novel_title: 小说名，用于生成文件名。
 
     Returns:
         bool: True 表示成功写入，False 表示跳过（正文为空/选择器未匹配/风控拦截）。
     """
-    novel_text = ""
-    zhangjie_title = ""
-    for i in range(len(novel_page_list)):
-        novel_page = novel_page_list[i]["content"]
-        novel_soup = BeautifulSoup(novel_page, "lxml")
-        if i == 0:
-            # zhangjie_title = str(novel_soup.select("div.con p")[0].string).strip()
-            zhangjie_title = novel_page_list[i]["title"]
-            if re.match(VOLUME_PATTERN, zhangjie_title):
-                zhangjie_title = re.sub(r'^正文卷\s*', '', zhangjie_title)
-            title_match = re.match(CHAPTER_NUM_PATTERN, zhangjie_title)
-            if title_match:
-                raw_num = title_match.group(1)
-                if not raw_num.isdecimal():
-                    raw_num = chineseNumber2Int(raw_num)
-                zhangjie_num = f"第{str(raw_num)}章"
-                zhangjie_title = zhangjie_title.replace(title_match.group(0), zhangjie_num)
-        novel_content_tag_list = novel_soup.select(novel_selector)
-        if novel_content_tag_list:
-            novel_content_tag = novel_content_tag_list[0]
-        else:
-            print(f"{zhangjie_title} 不存在 {novel_selector}")
-            return False
-
-        for extract_element in novel_content_tag.find_all("div"):
-            extract_element.extract()
-
-        novel_text += novel_content_tag.get_text("\n\t", strip=True)
+    zhangjie_title = novel_content["title"]
+    novel_text = novel_content["text"]
 
     if not novel_text:
         print(f"警告: {zhangjie_title} 正文为空")
@@ -125,7 +139,7 @@ async def page_goto(page, url, wait_until: str = "domcontentloaded") -> str:
     for _ in range(5):
         try:
             resp = await page.goto(url, wait_until=wait_until)
-        except TimeoutError:
+        except PlaywrightTimeoutError:
             continue
         if resp and resp.status == 200:
             break
@@ -139,106 +153,115 @@ async def page_goto(page, url, wait_until: str = "domcontentloaded") -> str:
 async def get_novel_page_content(
         context: BrowserContext, novel_info: dict,
         wait_until: str = "domcontentloaded",
-        content_list = None,
-        page = None,
-) -> List[Dict[str, str]]:
+) -> Dict[str, str]:
     """爬取单个章节的正文内容，支持翻页。
 
-    首次调用时创建新 Page，递归翻页时复用同一个 Page。
+    每获取一页就解析正文，避免保留完整 HTML。
 
     Args:
         context: Playwright BrowserContext。
         novel_info: 含 href（章节 URL）和 title（章节标题）的字典。
         wait_until: Page 加载策略。
-        content_list: 递归传递的内容累积列表，首次调用勿传。
-        page: 递归传递的 Page 对象，首次调用勿传。
 
     Returns:
-        List[Dict]: 每项含 content（HTML）和 title，对应章节的各页内容。
+        Dict: 含 title（章节标题）和 text（章节正文）。
     """
-    if content_list is None:
-        content_list = []
-    if page is None:
-        page = await context.new_page()
+    page = await context.new_page()
+
+    try:
         await stealth_async(page)
-    url = novel_info["href"]
-    content = await page_goto(page, url, wait_until)
-    content_list.append({
-        "content": content,
-        "title": novel_info.get("title")
-    })
+        url = novel_info["href"]
+        zhangjie_title = normalize_chapter_title(novel_info.get("title", ""))
+        novel_text_list = []
+        visited_urls = set()
 
-    if novel_btn_selector == "":
+        while True:
+            if url in visited_urls:
+                print(f"已停止重复翻页: {zhangjie_title} {url}")
+                break
+            visited_urls.add(url)
+
+            content = await page_goto(page, url, wait_until)
+            page_text = get_page_novel_text(content, zhangjie_title)
+            if page_text is None:
+                return {"title": zhangjie_title, "text": ""}
+            novel_text_list.append(page_text)
+
+            if novel_btn_selector == "":
+                break
+
+            soup = BeautifulSoup(content, "lxml")
+            novel_btn = soup.select(novel_btn_selector)
+            if len(novel_btn) == 0:
+                break
+
+            novel_next_btn = novel_btn[-1]
+            next_href = novel_next_btn.get("href")
+            if novel_next_btn.get_text(strip=True) != "下一页" or not next_href:
+                break
+
+            next_url = urljoin(url, next_href)
+            if next_url in visited_urls:
+                print(f"已停止重复翻页: {zhangjie_title} {next_url}")
+                break
+            url = next_url
+
+        return {"title": zhangjie_title, "text": "".join(novel_text_list)}
+    finally:
         await page.close()
-        return content_list
-
-    soup = BeautifulSoup(content, "lxml")
-    novel_btn = soup.select(novel_btn_selector)
-    if len(novel_btn) > 0:
-        novel_next_btn = novel_btn[-1]
-        # print(novel_next_btn, "\n", novel_next_btn.string)
-        if novel_next_btn.get_text(strip=True) == "下一页":
-            next_url = urljoin(url, novel_next_btn["href"])
-            next_novel_info = {
-                "href": next_url,
-                "title": novel_info.get("title")
-            }
-            return await get_novel_page_content(context, next_novel_info, wait_until, content_list, page)
-        else:
-            await page.close()
-            return content_list
-
-    await page.close()
-    return content_list
 
 
 async def get_catalogue_page_content(
         context: BrowserContext, url: str,
         wait_until: str = "domcontentloaded",
-        content_list = None,
-        page = None,
 ) -> List[str]:
-    """爬取目录页 HTML，支持翻页。
+    """爬取目录页 HTML，支持翻页。"""
+    content_list = []
+    page = await context.new_page()
 
-    首次调用时创建新 Page，递归翻页时复用同一个 Page。
-    遇到 javascript:void(0); 时停止翻页。
-
-    Args:
-        context: Playwright BrowserContext。
-        url: 目录页 URL。
-        wait_until: Page 加载策略。
-        content_list: 递归传递的内容累积列表，首次调用勿传。
-        page: 递归传递的 Page 对象，首次调用勿传。
-
-    Returns:
-        List[str]: 各目录页的 HTML 字符串列表。
-    """
-    if content_list is None:
-        content_list = []
-    if page is None:
-        page = await context.new_page()
+    try:
         await stealth_async(page)
+        visited_urls = set()
 
-    content = await page_goto(page, url, wait_until)
-    content_list.append(content)
+        while True:
+            if url in visited_urls:
+                print(f"已停止重复目录翻页: {url}")
+                break
+            visited_urls.add(url)
 
-    if catalogue_btn_selector == "":
-        await page.close()
+            content = await page_goto(page, url, wait_until)
+            content_list.append(content)
+
+            if catalogue_btn_selector == "":
+                break
+
+            soup = BeautifulSoup(content, "lxml")
+            catalogue_btn = soup.select(catalogue_btn_selector)
+            if len(catalogue_btn) == 0:
+                break
+
+            catalogue_next_btn = catalogue_btn[-1]
+            catalogue_next_href = catalogue_next_btn.get("href")
+            if not catalogue_next_href or catalogue_next_href == "javascript:void(0);":
+                break
+
+            next_url = urljoin(url, catalogue_next_href)
+            if next_url in visited_urls:
+                print(f"已停止重复目录翻页: {next_url}")
+                break
+            url = next_url
+
         return content_list
+    finally:
+        await page.close()
 
-    soup = BeautifulSoup(content, "lxml")
-    catalogue_btn = soup.select(catalogue_btn_selector)
-    if len(catalogue_btn) > 0:
-        catalogue_next_btn = catalogue_btn[-1]
-        catalogue_next_href = catalogue_next_btn["href"]
-        if catalogue_next_href == "javascript:void(0);":
-            await page.close()
-            return content_list
-        else:
-            return await get_catalogue_page_content(context, urljoin(url, catalogue_next_href), wait_until, content_list, page)
 
-    await page.close()
-    return content_list
+async def block_unneeded_resources(route):
+    """拦截小说正文不需要的静态资源。"""
+    if route.request.resource_type in BLOCK_RESOURCE_TYPES:
+        await route.abort()
+    else:
+        await route.continue_()
 
 
 async def main():
@@ -252,6 +275,7 @@ async def main():
             java_script_enabled=True,
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
         )
+        await context.route("**/*", block_unneeded_resources)
         context.set_default_timeout(300000.00)
 
         print("开始获取小说目录列表")

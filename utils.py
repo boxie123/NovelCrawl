@@ -11,7 +11,6 @@ def chineseNumber2Int(strNum: str):
     Returns:
         int: 阿拉伯数字。
     """
-    result = 0
     cnArr = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
              "〇": 0, "壹": 1, "贰": 2, "叁": 3, "肆": 4, "伍": 5, "陆": 6, "柒": 7, "捌": 8, "玖": 9, "两": 2}
 
@@ -19,28 +18,28 @@ def chineseNumber2Int(strNum: str):
     magArr = {"万": 10000, "亿": 100000000}
 
     # 判断是否是简写法, 如"一三三"
-    result_str = ""
-    for i in range(len(strNum)):
-        c = strNum[i]
-        if c in chArr:
-            break
-        elif c in cnArr:
-            result_str += str(cnArr[c])
-    else:
-        return int(result_str)
+    if all(c in cnArr for c in strNum):
+        return int("".join(str(cnArr[c]) for c in strNum))
 
-    # 正常写法
-    for i in range(len(strNum)):
-        c = strNum[i]
-        c_num = cnArr.get(c, 0)
-        if i == len(strNum) - 1:
-            return result + c_num
-        ch = chArr.get(strNum[i + 1], 1)
-        magni = magArr.get(strNum[i + 1], 1)
-        c_num = c_num * ch
-        result = (result + c_num) * magni
+    total = 0
+    section = 0
+    number = 0
+    for c in strNum:
+        if c in cnArr:
+            number = cnArr[c]
+        elif c in chArr:
+            unit = chArr[c]
+            if number == 0:
+                number = 1
+            section += number * unit
+            number = 0
+        elif c in magArr:
+            section += number
+            total += section * magArr[c]
+            section = 0
+            number = 0
 
-    return result
+    return total + section + number
 
 
 def remove_title(title: str):
