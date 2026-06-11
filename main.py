@@ -6,16 +6,7 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, TimeoutError as PlaywrightTimeoutError, async_playwright
-try:
-    from playwright_stealth import stealth_async
-except ImportError:
-    from playwright_stealth import Stealth
-
-    _stealth = Stealth()
-
-    async def stealth_async(page):
-        await _stealth.apply_stealth_async(page)
-
+from playwright_stealth import Stealth
 from utils import chineseNumber2Int, remove_title, txt_write
 
 import page_config
@@ -24,6 +15,7 @@ VOLUME_PATTERN = re.compile("正文卷")
 CHAPTER_NUM_PATTERN = re.compile(r"^\s?第?([0-9一二三四五六七八九十百千万亿零壹贰叁肆伍陆柒捌玖拾佰仟]+)[章张]{0,1}")
 SKIP_PATTERN = re.compile("(正在手打中，请稍等片刻，内容更新后，请重新刷新页面，即可获取最新更新！)|(网页版章节内容慢)")
 BLOCK_RESOURCE_TYPES = {"image", "font", "media", "stylesheet"}
+stealth = Stealth(init_scripts_only=True)
 
 web_name = ""
 
@@ -169,7 +161,6 @@ async def get_novel_page_content(
     page = await context.new_page()
 
     try:
-        await stealth_async(page)
         url = novel_info["href"]
         zhangjie_title = normalize_chapter_title(novel_info.get("title", ""))
         novel_text_list = []
@@ -220,7 +211,6 @@ async def get_catalogue_page_content(
     page = await context.new_page()
 
     try:
-        await stealth_async(page)
         visited_urls = set()
 
         while True:
@@ -275,6 +265,7 @@ async def main():
             java_script_enabled=True,
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
         )
+        await stealth.apply_stealth_async(context)
         await context.route("**/*", block_unneeded_resources)
         context.set_default_timeout(300000.00)
 
