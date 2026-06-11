@@ -6,9 +6,14 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, async_playwright
+from playwright_stealth import stealth_async
 from utils import chineseNumber2Int, remove_title, txt_write
 
 import page_config
+
+VOLUME_PATTERN = re.compile("正文卷")
+CHAPTER_NUM_PATTERN = re.compile(r"^\s?第?([0-9一二三四五六七八九十百千万亿零壹贰叁肆伍陆柒捌玖拾佰仟]+)[章张]{0,1}")
+SKIP_PATTERN = re.compile("(正在手打中，请稍等片刻，内容更新后，请重新刷新页面，即可获取最新更新！)|(网页版章节内容慢)")
 
 web_name = ""
 
@@ -43,7 +48,7 @@ def get_catalogue_url_list(content_list):
     return zhangjie_list_href, now_title
 
 
-def get_novel_content(novel_page_list, novel_title):
+def get_novel_content(novel_page_list, novel_title) -> bool:
     novel_text = ""
     zhangjie_title = ""
     for i in range(len(novel_page_list)):
@@ -52,11 +57,9 @@ def get_novel_content(novel_page_list, novel_title):
         if i == 0:
             # zhangjie_title = str(novel_soup.select("div.con p")[0].string).strip()
             zhangjie_title = novel_page_list[i]["title"]
-            zhangjie_title_correct = re.compile("正文卷")
-            if re.match(zhangjie_title_correct, zhangjie_title):
-                zhangjie_title = zhangjie_title[4:]
-            num_pattern = re.compile(r"^\s?第?([0-9一二三四五六七八九十百千万亿零壹贰叁肆伍陆柒捌玖拾佰仟]+)[章张]{0,1}")
-            title_match = re.match(num_pattern, zhangjie_title)
+            if re.match(VOLUME_PATTERN, zhangjie_title):
+                zhangjie_title = re.sub(r'^正文卷\s*', '', zhangjie_title)
+            title_match = re.match(CHAPTER_NUM_PATTERN, zhangjie_title)
             if title_match:
                 raw_num = title_match.group(1)
                 if not raw_num.isdecimal():
@@ -64,25 +67,28 @@ def get_novel_content(novel_page_list, novel_title):
                 zhangjie_num = f"第{str(raw_num)}章"
                 zhangjie_title = zhangjie_title.replace(title_match.group(0), zhangjie_num)
         novel_content_tag_list = novel_soup.select(novel_selector)
-        if len(novel_content_tag_list) > 0:
-            novel_content_tag = novel_soup.select(novel_selector)[0]
+        if novel_content_tag_list:
+            novel_content_tag = novel_content_tag_list[0]
         else:
             print(f"{zhangjie_title} 不存在 {novel_selector}")
-            print(novel_soup)
-            return
+            return False
 
         for extract_element in novel_content_tag.find_all("div"):
             extract_element.extract()
 
         novel_text += novel_content_tag.get_text("\n\t", strip=True)
 
-    text_pattern = re.compile("(正在手打中，请稍等片刻，内容更新后，请重新刷新页面，即可获取最新更新！)|(网页版章节内容慢)")
-    if len(novel_text) < 400 and re.search(text_pattern, novel_text):
+    if not novel_text:
+        print(f"警告: {zhangjie_title} 正文为空")
+        return False
+
+    if len(novel_text) < 400 and re.search(SKIP_PATTERN, novel_text):
         print(f"已跳过: {zhangjie_title}")
-        return
+        return False
 
     novel_text += "\n\n"
     txt_write(novel_title + web_name, zhangjie_title, novel_text)
+    return True
 
 
 async def page_goto(page, url, wait_until: str = "domcontentloaded") -> str:
@@ -91,9 +97,7 @@ async def page_goto(page, url, wait_until: str = "domcontentloaded") -> str:
             resp = await page.goto(url, wait_until=wait_until)
         except TimeoutError:
             continue
-        except TypeError:
-            return ""
-        if resp.status == 200:
+        if resp and resp.status == 200:
             break
         await asyncio.sleep(5.0)
     else:
@@ -112,6 +116,7 @@ async def get_novel_page_content(
         content_list = []
     if page is None:
         page = await context.new_page()
+        await stealth_async(page)
     url = novel_info["href"]
     content = await page_goto(page, url, wait_until)
     content_list.append({
@@ -120,6 +125,7 @@ async def get_novel_page_content(
     })
 
     if novel_btn_selector == "":
+        await page.close()
         return content_list
 
     soup = BeautifulSoup(content, "lxml")
@@ -127,7 +133,7 @@ async def get_novel_page_content(
     if len(novel_btn) > 0:
         novel_next_btn = novel_btn[-1]
         # print(novel_next_btn, "\n", novel_next_btn.string)
-        if novel_next_btn.string.strip() == "下一页":
+        if novel_next_btn.get_text(strip=True) == "下一页":
             next_url = urljoin(url, novel_next_btn["href"])
             next_novel_info = {
                 "href": next_url,
@@ -135,8 +141,10 @@ async def get_novel_page_content(
             }
             return await get_novel_page_content(context, next_novel_info, wait_until, content_list, page)
         else:
+            await page.close()
             return content_list
 
+    await page.close()
     return content_list
 
 
@@ -150,11 +158,13 @@ async def get_catalogue_page_content(
         content_list = []
     if page is None:
         page = await context.new_page()
+        await stealth_async(page)
 
     content = await page_goto(page, url, wait_until)
     content_list.append(content)
 
     if catalogue_btn_selector == "":
+        await page.close()
         return content_list
 
     soup = BeautifulSoup(content, "lxml")
@@ -163,10 +173,12 @@ async def get_catalogue_page_content(
         catalogue_next_btn = catalogue_btn[-1]
         catalogue_next_href = catalogue_next_btn["href"]
         if catalogue_next_href == "javascript:void(0);":
+            await page.close()
             return content_list
         else:
             return await get_catalogue_page_content(context, urljoin(url, catalogue_next_href), wait_until, content_list, page)
 
+    await page.close()
     return content_list
 
 
@@ -175,39 +187,45 @@ async def main():
     p = await async_playwright().start()
     browser = await p.chromium.launch()
     # browser = p.chromium.launch(headless=False)
-    context = await browser.new_context(
-        java_script_enabled=True,
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-    )
-    context.set_default_timeout(300000.00)
+    try:
+        context = await browser.new_context(
+            java_script_enabled=True,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        )
+        context.set_default_timeout(300000.00)
 
-    print("开始获取小说目录列表")
-    content_list = await get_catalogue_page_content(context, catalogue_url)
-    url_list, novel_title = get_catalogue_url_list(content_list)
+        print("开始获取小说目录列表")
+        content_list = await get_catalogue_page_content(context, catalogue_url)
+        url_list, novel_title = get_catalogue_url_list(content_list)
 
-    remove_title(novel_title + web_name)
+        remove_title(novel_title + web_name)
 
-    loop_num = page_config.PRE_LOOP_NUM
-    for i in range(ceil(len(url_list[start_num:]) / loop_num)):
-        async with asyncio.TaskGroup() as tg:
-            tasks_list = [
-                tg.create_task(get_novel_page_content(context, novel_url))
-                for novel_url in url_list[start_num + i * loop_num: start_num + (i + 1) * loop_num]
-            ]
-            print("开始爬取小说内容")
+        loop_num = page_config.PRE_LOOP_NUM
+        for i in range(ceil(len(url_list[start_num:]) / loop_num)):
+            async with asyncio.TaskGroup() as tg:
+                tasks_list = [
+                    tg.create_task(get_novel_page_content(context, novel_url))
+                    for novel_url in url_list[start_num + i * loop_num: start_num + (i + 1) * loop_num]
+                ]
+                print("开始爬取小说内容")
 
-        print(f"爬取成功 {len(tasks_list)} 章, 正在写入文件")
-        for task in tasks_list:
-            get_novel_content(task.result(), novel_title)
-        await asyncio.sleep(page_config.PRE_LOOP_WAIT_TIME)
-
-    await browser.close()
-    await p.stop()
+            success_count = 0
+            for task in tasks_list:
+                if get_novel_content(task.result(), novel_title):
+                    success_count += 1
+            print(f"成功 {success_count}/{len(tasks_list)} 章")
+            await asyncio.sleep(page_config.PRE_LOOP_WAIT_TIME)
+    except Exception as e:
+        print(f"爬取出错: {e}")
+        raise
+    finally:
+        await browser.close()
+        await p.stop()
     print("无头浏览器已关闭")
 
 
 if __name__ == "__main__":
-    catalogue_url = input("请输入小说目录的url：") or "https://www.sudugu.org/54/"
+    catalogue_url = input("请输入小说目录的url：") or "https://www.bequke.com/xiaoshuo/112/112178/"
     start_num = input("从第几章开始爬取(直接回车默认从头开始):")
     if start_num.isdigit():
         start_num = int(start_num)

@@ -34,6 +34,22 @@ PAGE_CONFIG: List[Dict[str, Union[List[str], str]]] = [
         "novel_selector": "div.main_content",
         "novel_btn": "div.bottom-nav a",
     },
+    {
+        "domain": ["www.dongtanxs.com"],
+        "catalogue_selector": "div.listmain dd",
+        "catalogue_btn": "",
+        "catalogue_title": "div.book div.info h2",
+        "novel_selector": "div#content",
+        "novel_btn": "div.page_chapter a",
+    },
+    {
+        "domain": ["www.bequke.com"],
+        "catalogue_selector": "div.chapterlist div.all li",
+        "catalogue_btn": "",
+        "catalogue_title": "div.bookinfo div.booktitle h1 a",
+        "novel_selector": "div#booktxt",
+        "novel_btn": "div.readpage a",
+    },
 ]
 
 PRE_LOOP_NUM = 3
