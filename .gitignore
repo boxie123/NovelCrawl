@@ -153,5 +153,9 @@ cython_debug/
 *.txt
 *.cmd
 books/
-test_*.py
 .idea/
+
+# NovelCrawl runtime data
+data/
+exports/
+logs/

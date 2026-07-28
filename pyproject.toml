@@ -1,7 +1,7 @@
 [project]
 name = "novelcrawl"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "支持 SQLite 断点续传、刷新、导出与跨来源合并的小说下载器"
 authors = [
     { name = "铂屑", email = "80164656+boxie123@users.noreply.github.com" },
 ]
@@ -21,4 +21,7 @@ dev-dependencies = []
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["."]
+packages = ["novelcrawl"]
+
+[project.scripts]
+novelcrawl = "novelcrawl.cli:main"
