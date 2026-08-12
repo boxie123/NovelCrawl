@@ -21,7 +21,7 @@ class AppConfig:
         source_export_dir: 普通来源 TXT 目录。
         merged_export_dir: 合并版本 TXT 目录。
         log_path: 未预期异常的本地堆栈日志。
-        batch_size: 同时抓取的最大章节数量。
+        batch_size: 同时抓取的最大章节数量；CLI 可为本次任务临时覆盖。
         batch_wait_seconds: 相邻批次之间的等待秒数。
         max_attempts_per_run: 单章在一次运行中的最大尝试次数。
         navigation_timeout_ms: Playwright 操作默认超时，单位毫秒。

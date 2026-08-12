@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from novelcrawl.config import AppConfig
 from novelcrawl.exporter import TxtExporter
 from novelcrawl.models import CatalogueChapter, FetchResult
-from novelcrawl.services import DownloadService
+from novelcrawl.services import DownloadService, normalize_browser_user_agent
 
 from tests.helpers import StorageTestCase
 
@@ -57,6 +57,20 @@ class CatalogueCrawler(FakeCrawler):
         )
 
 
+class WarmupCrawler(CatalogueCrawler):
+    """记录刷新是否在抓取章节前预访问目录。"""
+
+    def __init__(self):
+        self.events = []
+
+    async def warm_up(self, catalogue_url):
+        self.events.append(("warm_up", catalogue_url))
+
+    async def fetch_chapter(self, chapter):
+        self.events.append(("fetch_chapter", chapter.position))
+        return await super().fetch_chapter(chapter)
+
+
 class CountingExporter(TxtExporter):
     """在真实导出功能外增加调用计数，用于防止每批重复导出。"""
 
@@ -78,13 +92,25 @@ class SessionlessDownloadService(DownloadService):
     """用 CatalogueCrawler 替换真实 Playwright 会话的测试服务。"""
 
     @asynccontextmanager
-    async def _crawler_session(self, site_config):
+    async def _crawler_session(self, site_config, *, catalogue_url):
         """模拟 async with 所需的异步上下文管理器。
 
         ``yield`` 前相当于进入会话，``yield`` 后相当于退出会话。本 fake 没有
         浏览器资源需要关闭，所以只需提供抓取器。
         """
         yield CatalogueCrawler()
+
+
+class WarmupDownloadService(DownloadService):
+    """为 refresh 提供可观察调用顺序的模拟抓取器。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fake_crawler = WarmupCrawler()
+
+    @asynccontextmanager
+    async def _crawler_session(self, site_config, *, catalogue_url):
+        yield self.fake_crawler
 
 
 class DownloadServiceTests(StorageTestCase):
@@ -186,3 +212,49 @@ class DownloadServiceTests(StorageTestCase):
         self.assertNotIn("第1章", text)
         self.assertIn("第2章", text)
         self.assertIn("第3章", text)
+
+    def test_headless_user_agent_keeps_actual_version(self):
+        """UA 只移除 Headless 标记，不得再次硬编码浏览器版本。"""
+        original = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "HeadlessChrome/149.0.7827.55 Safari/537.36"
+        )
+
+        normalized = normalize_browser_user_agent(original)
+
+        self.assertIn("Chrome/149.0.7827.55", normalized)
+        self.assertNotIn("HeadlessChrome", normalized)
+        # 默认 UA 若已经是普通 Chrome，函数必须保持原样，避免重复改写。
+        ordinary = "Mozilla/5.0 Chrome/149.0.7827.55 Safari/537.36"
+        self.assertEqual(normalize_browser_user_agent(ordinary), ordinary)
+
+    def test_refresh_warms_catalogue_before_fetching_chapters(self):
+        """刷新必须先预访问目录，再请求用户选择的章节。"""
+        source_id = self.create_source()
+        self.sync_three_chapters(source_id)
+        config = AppConfig(
+            database_path=self.root / "unused.db",
+            source_export_dir=self.root / "exports" / "sources",
+            merged_export_dir=self.root / "exports" / "merged",
+            batch_size=1,
+            batch_wait_seconds=0,
+            max_attempts_per_run=1,
+        )
+        exporter = TxtExporter(
+            self.storage,
+            config.source_export_dir,
+            config.merged_export_dir,
+        )
+        service = WarmupDownloadService(self.storage, exporter, config)
+
+        asyncio.run(service.refresh_source(source_id, positions=[1]))
+
+        self.assertEqual(
+            service.fake_crawler.events[0],
+            ("warm_up", "https://example.com/book/"),
+        )
+        self.assertEqual(
+            service.fake_crawler.events[1],
+            ("fetch_chapter", 1),
+        )

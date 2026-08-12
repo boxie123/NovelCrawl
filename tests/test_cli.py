@@ -4,10 +4,12 @@
 浏览器，也不需要真实运行一个终端进程。
 """
 
+import argparse
 import unittest
 
 from novelcrawl.cli import (
     build_parser,
+    parse_concurrency,
     parse_position_spec,
     parse_source_position,
 )
@@ -42,3 +44,24 @@ class CliTests(unittest.TestCase):
         args = build_parser().parse_args([])
         # assertIsNone 专门检查对象就是 None，而不是其他“假值”如 0 或 ""。
         self.assertIsNone(args.command)
+
+    def test_concurrency_is_available_on_network_commands(self):
+        """下载、续传和刷新都应接受 1～5 的本次运行并发数。"""
+        parser = build_parser()
+        command_lines = (
+            ["download", "https://example.com/catalog", "--concurrency", "5"],
+            ["resume", "1", "--concurrency", "2"],
+            ["refresh", "1", "--all", "--concurrency", "1"],
+        )
+
+        for command_line in command_lines:
+            with self.subTest(command_line=command_line):
+                args = parser.parse_args(command_line)
+                self.assertEqual(args.concurrency, int(command_line[-1]))
+
+    def test_concurrency_rejects_values_outside_one_to_five(self):
+        """并发数不能为零、负数、超过五或非整数。"""
+        for value in ("0", "-1", "6", "three"):
+            with self.subTest(value=value):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    parse_concurrency(value)

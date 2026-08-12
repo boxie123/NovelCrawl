@@ -53,6 +53,16 @@ uv run python main.py download "https://www.sudugu.org/1811/"
 uv run python main.py download "https://www.sudugu.org/1811/" --start-position 500
 ```
 
+临时调整本次任务的章节并发数（允许 1～5，默认 3）：
+
+```powershell
+uv run python main.py download "https://www.sudugu.org/1811/" --concurrency 2
+uv run python main.py resume 1 --concurrency 1
+```
+
+并发数同时决定每批处理的章节数；每批之间仍按默认设置等待 10 秒。提高
+并发数会提高整体请求速率，应根据目标网站规则和响应情况谨慎使用。
+
 指定 `--start-position` 后，本次进度统计、待下载队列和 TXT 导出均从该目录位置开始，不包含更早的章节。未指定时处理和导出整个来源。
 
 按来源 ID 续传：
@@ -73,7 +83,12 @@ uv run python main.py status 1
 ```powershell
 uv run python main.py refresh 1 --chapters "100-120,125"
 uv run python main.py refresh 1 --all
+uv run python main.py refresh 1 --chapters "100-120" --concurrency 1
 ```
+
+刷新会先预访问一次来源目录页，在同一浏览器会话中建立 Cookie；章节第一页
+使用目录 URL 作为 Referer，正文后续分页使用上一页 URL 作为 Referer。目录
+预访问失败时会停止刷新，不继续产生一批无效章节请求。
 
 重新导出 TXT：
 
@@ -156,6 +171,7 @@ uv run python -m unittest discover -v
 项目保留以下默认限制，以降低误用及对目标服务器造成压力的风险：
 
 - **并发限制** — 默认每批最多 3 章并发请求。
+- **可控并发** — 网络命令可用 `--concurrency` 临时设置 1～5；提高并发会增加整体请求速率。
 - **请求间隔** — 默认批次间等待 10 秒。
 - **有限重试** — 页面导航和章节任务仅进行有限次数重试，持续失败会记录原因并停止本次尝试。
 - **避免重复请求** — 普通续传跳过已完成章节，减少对相同内容的重复访问。

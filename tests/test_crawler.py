@@ -8,7 +8,7 @@
 import unittest
 
 from novelcrawl.crawler import NovelCrawler
-from novelcrawl.models import SiteConfig
+from novelcrawl.models import ChapterRecord, SiteConfig
 
 
 ERROR_HTML = """
@@ -65,9 +65,10 @@ class FakePage:
         self.refresh_clicks = 0
         self.goto_calls = 0
 
-    async def goto(self, url, wait_until):
+    async def goto(self, url, wait_until, referer=None):
         """首次导航成功，但页面正文是站点的临时错误提示。"""
         self.goto_calls += 1
+        self.last_referer = referer
         return FakeResponse()
 
     async def content(self):
@@ -84,6 +85,69 @@ class FakePage:
         """真实浏览器会等待新页面 DOM 完成；模拟页面无需实际等待。"""
         if state != "domcontentloaded":
             raise AssertionError("等待的页面状态不正确")
+
+
+class SelfLinkedChapterPage:
+    """模拟“下一页”链接错误地指向当前分页的章节页面。"""
+
+    def __init__(self):
+        self.goto_calls = 0
+
+    async def goto(self, url, wait_until, referer=None):
+        """记录导航次数；若重复导航，测试末尾的断言会失败。"""
+        self.goto_calls += 1
+        self.last_referer = referer
+        return FakeResponse()
+
+    async def content(self):
+        """返回带有正文及当前页链接的 HTML。"""
+        return """
+        <div class="content">本页正文</div>
+        <div class="page">
+          <a href="/chapter/1">上一页</a>
+          <a href="/chapter/1#content">下一页（快捷键→）</a>
+        </div>
+        """
+
+    async def close(self):
+        """保持与真实 Playwright Page 的关闭接口一致。"""
+
+
+class PaginatedChapterPage:
+    """模拟两页正文，并记录每次导航携带的 Referer。"""
+
+    def __init__(self):
+        self.current_url = None
+        self.navigation_records = []
+
+    async def goto(self, url, wait_until, referer=None):
+        self.current_url = url
+        self.navigation_records.append((url, referer))
+        return FakeResponse()
+
+    async def content(self):
+        if self.current_url.endswith("/1"):
+            return """
+            <div class="content">第一页正文</div>
+            <div class="page"><a href="/chapter/2">下一页（快捷键→）</a></div>
+            """
+        return """
+        <div class="content">第二页正文</div>
+        <div class="page"><a href="/catalog">目录</a></div>
+        """
+
+    async def close(self):
+        """模拟关闭标签页。"""
+
+
+class FakeContext:
+    """每次 ``new_page`` 都返回测试预先提供的页面对象。"""
+
+    def __init__(self, page):
+        self.page = page
+
+    async def new_page(self):
+        return self.page
 
 
 class CrawlerRetryTests(unittest.IsolatedAsyncioTestCase):
@@ -122,3 +186,82 @@ class CrawlerRetryTests(unittest.IsolatedAsyncioTestCase):
         # 关键断言：恢复动作是点击链接，而不是再次调用 goto。
         self.assertEqual(page.goto_calls, 1)
 
+    async def test_current_page_next_link_does_not_navigate_twice(self):
+        """下一页规范化后仍是当前 URL 时，应结束翻页而非再次请求。"""
+        page = SelfLinkedChapterPage()
+        config = SiteConfig(
+            key="test",
+            domains=("example.com",),
+            catalogue_selector="ul li",
+            catalogue_button_selector="",
+            catalogue_title_selector="h1",
+            novel_selector="div.content",
+            novel_button_selector="div.page a",
+        )
+        crawler = NovelCrawler(FakeContext(page), config)
+        chapter = ChapterRecord(
+            id=1,
+            source_id=1,
+            url="https://example.com/chapter/1",
+            position=1,
+            catalogue_title="第一章",
+            normalized_title="第1章",
+            status="pending",
+            content=None,
+            last_error_type=None,
+            last_error=None,
+        )
+
+        result = await crawler.fetch_chapter(chapter)
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(result.content, "本页正文")
+        self.assertEqual(page.goto_calls, 1)
+
+    async def test_chapter_pages_use_catalogue_then_previous_page_as_referer(self):
+        """第一页引用目录，后续分页引用上一页，且正文完整拼接。"""
+        page = PaginatedChapterPage()
+        config = SiteConfig(
+            key="test",
+            domains=("example.com",),
+            catalogue_selector="ul li",
+            catalogue_button_selector="",
+            catalogue_title_selector="h1",
+            novel_selector="div.content",
+            novel_button_selector="div.page a",
+        )
+        crawler = NovelCrawler(
+            FakeContext(page),
+            config,
+            catalogue_url="https://example.com/catalog",
+        )
+        chapter = ChapterRecord(
+            id=1,
+            source_id=1,
+            url="https://example.com/chapter/1",
+            position=1,
+            catalogue_title="第一章",
+            normalized_title="第1章",
+            status="pending",
+            content=None,
+            last_error_type=None,
+            last_error=None,
+        )
+
+        result = await crawler.fetch_chapter(chapter)
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(result.content, "第一页正文第二页正文")
+        self.assertEqual(
+            page.navigation_records,
+            [
+                (
+                    "https://example.com/chapter/1",
+                    "https://example.com/catalog",
+                ),
+                (
+                    "https://example.com/chapter/2",
+                    "https://example.com/chapter/1",
+                ),
+            ],
+        )

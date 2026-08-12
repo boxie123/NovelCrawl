@@ -232,6 +232,45 @@ def parse_chapter_text(html: str, selector: str) -> Optional[str]:
     return content_node.get_text("\n\t", strip=True)
 
 
+def find_next_page_href(html: str, selector: str) -> Optional[str]:
+    """从正文导航区最后一个按钮中提取有效的“下一页”链接。
+
+    Args:
+        html: 当前正文分页的 HTML。
+        selector: 匹配正文导航按钮的 CSS 选择器。
+
+    Returns:
+        可继续访问的 ``href``；没有下一页时返回 ``None``。
+
+    各站导航按钮的数量和属性并不统一，因此继续沿用项目原有约定：只检查
+    选择器匹配结果中的最后一个按钮。按钮文字允许在“下一页”后附加快捷键、
+    箭头等说明，但不能只是在任意位置包含这三个字，以免把“没有下一页”等
+    提示误判为可用链接。
+    """
+    if not selector:
+        return None
+
+    soup = BeautifulSoup(html, "lxml")
+    buttons = soup.select(selector)
+    if not buttons:
+        return None
+
+    next_button = buttons[-1]
+    button_text = next_button.get_text(strip=True)
+    if not button_text.startswith("下一页"):
+        return None
+
+    href = (next_button.get("href") or "").strip()
+    lowered_href = href.lower()
+    if (
+        not href
+        or href.startswith("#")
+        or lowered_href == "javascript:void(0);"
+    ):
+        return None
+    return href
+
+
 def validate_chapter_content(content: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     """检查解析结果能否作为完整章节入库。
 

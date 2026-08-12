@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import sqlite3
 import sys
+from dataclasses import replace
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from novelcrawl.config import DEFAULT_CONFIG
@@ -94,6 +95,28 @@ def parse_source_position(value: str) -> Tuple[int, int]:
     return int(pieces[0]), int(pieces[1])
 
 
+def parse_concurrency(value: str) -> int:
+    """解析 CLI 并发数，并把允许范围限制为 1～5。"""
+    try:
+        concurrency = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("并发数必须是 1～5 的整数")
+    if concurrency < 1 or concurrency > 5:
+        raise argparse.ArgumentTypeError("并发数必须在 1～5 之间")
+    return concurrency
+
+
+def _add_concurrency_argument(parser: argparse.ArgumentParser) -> None:
+    """为会抓取章节的子命令添加统一的本次运行并发选项。"""
+    parser.add_argument(
+        "--concurrency",
+        type=parse_concurrency,
+        default=None,
+        metavar="N",
+        help="本次任务每批并发章节数（1～5，默认 3）",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """声明所有公开命令；业务实现统一委托给 service。
 
@@ -120,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="仅下载该目录位置及之后的未完成章节",
     )
+    _add_concurrency_argument(download_parser)
 
     resume_parser = subparsers.add_parser(
         "resume",
@@ -127,6 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resume_parser.add_argument("source_id", type=int)
     resume_parser.add_argument("--start-position", type=int)
+    _add_concurrency_argument(resume_parser)
 
     refresh_parser = subparsers.add_parser(
         "refresh",
@@ -145,6 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="刷新全部章节",
     )
+    _add_concurrency_argument(refresh_parser)
 
     export_parser = subparsers.add_parser(
         "export",
@@ -265,7 +291,13 @@ def execute(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     ``with Storage`` 保证整个命令共享一个数据库连接，并在命令结束或异常时
     自动关闭。服务对象共享同一个 Storage，避免各自维护连接和状态。
     """
-    config = DEFAULT_CONFIG
+    # 并发参数只覆盖当前进程中的批次大小，不写入数据库或配置文件。
+    concurrency = getattr(args, "concurrency", None)
+    config = (
+        replace(DEFAULT_CONFIG, batch_size=concurrency)
+        if concurrency is not None
+        else DEFAULT_CONFIG
+    )
     # delay=True 的日志 handler 只在真正出现 unknown 异常时创建日志文件。
     configure_logging(config.log_path)
     with Storage(config.database_path) as storage:

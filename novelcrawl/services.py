@@ -18,6 +18,7 @@
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import Dict, Iterable, List, Optional
 from urllib.parse import urlparse
@@ -39,6 +40,21 @@ logger = logging.getLogger(__name__)
 
 
 BLOCKED_RESOURCE_TYPES = {"image", "font", "media", "stylesheet"}
+HEADLESS_CHROME_PATTERN = re.compile(r"\bHeadlessChrome/(?P<version>[0-9.]+)")
+
+
+def normalize_browser_user_agent(user_agent: str) -> str:
+    """保留实际 Chromium 版本，仅移除默认 UA 中的 ``Headless`` 标记。
+
+    Playwright 随浏览器升级而变化，不能再像旧实现一样硬编码 Chrome 114。
+    正则只替换产品名称，平台、WebKit、版本号和 Safari 标识均保持原样；如果
+    将来 Playwright 默认 UA 已不含该标记，则直接返回原值。
+    """
+    return HEADLESS_CHROME_PATTERN.sub(
+        lambda match: "Chrome/{}".format(match.group("version")),
+        user_agent,
+        count=1,
+    )
 
 
 async def block_unneeded_resources(route) -> None:
@@ -82,11 +98,17 @@ class DownloadService:
         self.stealth = Stealth(init_scripts_only=True)
 
     @asynccontextmanager
-    async def _crawler_session(self, site_config: SiteConfig):
+    async def _crawler_session(
+        self,
+        site_config: SiteConfig,
+        *,
+        catalogue_url: str,
+    ):
         """创建并自动清理一次抓取会话。
 
         Args:
             site_config: 当前网站的 CSS 选择器配置。
+            catalogue_url: 当前来源目录 URL，作为章节第一页的 Referer。
 
         Yields:
             已绑定浏览器上下文和站点配置的 ``NovelCrawler``。
@@ -101,13 +123,22 @@ class DownloadService:
             # 一个 Browser 可包含多个 Context；本项目每次任务使用独立 Context，
             # 使 Cookie、路由规则和超时设置不会泄漏到下一次任务。
             browser = await playwright.chromium.launch()
+
+            # 先在不访问网络的临时页面中读取本版本 Chromium 的默认 UA，再只
+            # 移除 Headless 产品标记。这样版本会随 Playwright 自动更新，不会
+            # 再出现硬编码 Chrome 114 与实际浏览器版本不一致的问题。
+            probe_context = await browser.new_context()
+            try:
+                probe_page = await probe_context.new_page()
+                default_user_agent = await probe_page.evaluate(
+                    "navigator.userAgent"
+                )
+            finally:
+                await probe_context.close()
+
             context: BrowserContext = await browser.new_context(
                 java_script_enabled=True,
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/114.0.0.0 Safari/537.36"
-                ),
+                user_agent=normalize_browser_user_agent(default_user_agent),
             )
             await self.stealth.apply_stealth_async(context)
             # "**/*" 表示拦截该上下文中的全部请求，再由回调决定终止或继续。
@@ -117,6 +148,7 @@ class DownloadService:
                 yield NovelCrawler(
                     context,
                     site_config,
+                    catalogue_url=catalogue_url,
                     navigation_retries=self.config.navigation_retries,
                 )
             finally:
@@ -169,7 +201,10 @@ class DownloadService:
                 "没有匹配到站点配置: {}".format(normalized_catalogue_url)
             )
 
-        async with self._crawler_session(site_config) as crawler:
+        async with self._crawler_session(
+            site_config,
+            catalogue_url=normalized_catalogue_url,
+        ) as crawler:
             # 每次续传都重新同步目录，这样网站新增章节会先进入 pending 状态。
             title, catalogue = await crawler.fetch_catalogue(
                 normalized_catalogue_url
@@ -300,7 +335,13 @@ class DownloadService:
                     )
                 )
 
-        async with self._crawler_session(site_config) as crawler:
+        async with self._crawler_session(
+            site_config,
+            catalogue_url=source.catalogue_url,
+        ) as crawler:
+            # refresh 不重新解析或同步目录，但先访问目录页，使章节请求与正常
+            # 浏览顺序一致，并在同一个 BrowserContext 中建立站点 Cookie。
+            await crawler.warm_up(source.catalogue_url)
             await self._run_chapters(
                 crawler,
                 chapters,

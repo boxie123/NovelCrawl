@@ -33,6 +33,7 @@ from novelcrawl.models import (
     SiteConfig,
 )
 from novelcrawl.parsers import (
+    find_next_page_href,
     normalize_chapter_title,
     parse_catalogue,
     parse_chapter_text,
@@ -75,6 +76,7 @@ class NovelCrawler:
     Attributes:
         context: Playwright 浏览器上下文，用来创建页面。
         config: 当前站点的目录和正文 CSS 选择器。
+        catalogue_url: 当前来源目录地址，用作章节第一页的 Referer。
         navigation_retries: 单个页面导航失败时的最大尝试次数。
     """
 
@@ -83,11 +85,15 @@ class NovelCrawler:
         context: BrowserContext,
         config: SiteConfig,
         *,
+        catalogue_url: Optional[str] = None,
         navigation_retries: int = 5,
     ):
         """保存浏览器上下文和站点规则，不会立即创建标签页。"""
         self.context = context
         self.config = config
+        self.catalogue_url = (
+            normalize_url(catalogue_url) if catalogue_url else None
+        )
         self.navigation_retries = navigation_retries
 
     async def _recover_temporary_error_page(
@@ -145,12 +151,19 @@ class NovelCrawler:
             )
         )
 
-    async def _page_goto(self, page, url: str) -> str:
+    async def _page_goto(
+        self,
+        page,
+        url: str,
+        *,
+        referer: Optional[str] = None,
+    ) -> str:
         """访问 URL，并在有限重试后返回完整页面 HTML。
 
         Args:
             page: Playwright Page，即当前浏览器标签页。
             url: 要访问的绝对 URL。
+            referer: 仅用于本次导航的来源页 URL；``None`` 表示不显式设置。
 
         Returns:
             HTTP 200 页面对应的 HTML 字符串。
@@ -165,7 +178,11 @@ class NovelCrawler:
         last_error = None
         for attempt in range(1, self.navigation_retries + 1):
             try:
-                response = await page.goto(url, wait_until="domcontentloaded")
+                response = await page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    referer=referer,
+                )
                 if response is not None and response.status == 200:
                     html = await page.content()
                     return await self._recover_temporary_error_page(
@@ -185,6 +202,18 @@ class NovelCrawler:
         if isinstance(last_error, PlaywrightTimeoutError):
             raise last_error
         raise PageNavigationError("{} 获取失败: {}".format(url, last_error))
+
+    async def warm_up(self, url: str) -> None:
+        """预访问目录页，在当前浏览器上下文中建立 Cookie 等会话状态。
+
+        本方法只确认页面能够正常取得，不解析目录，也不写数据库。标签页始终
+        在结束时关闭，但 Context 级 Cookie 会保留给随后创建的章节标签页。
+        """
+        page = await self.context.new_page()
+        try:
+            await self._page_goto(page, normalize_url(url))
+        finally:
+            await page.close()
 
     async def fetch_catalogue(
         self,
@@ -266,6 +295,7 @@ class NovelCrawler:
         )
         page = None
         url = chapter.url
+        referer = self.catalogue_url
         visited_urls: Set[str] = set()
         page_texts = []
 
@@ -283,7 +313,11 @@ class NovelCrawler:
                     )
                 visited_urls.add(url)
 
-                html = await self._page_goto(page, url)
+                html = await self._page_goto(
+                    page,
+                    url,
+                    referer=referer,
+                )
                 page_text = parse_chapter_text(
                     html,
                     self.config.novel_selector,
@@ -305,18 +339,17 @@ class NovelCrawler:
                 if not selector:
                     break
 
-                soup = BeautifulSoup(html, "lxml")
-                buttons = soup.select(selector)
-                if not buttons:
-                    break
-
-                # 现有站点配置约定：正文导航区最后一个按钮可能是“下一页”。
-                next_button = buttons[-1]
-                next_href = next_button.get("href")
-                if next_button.get_text(strip=True) != "下一页" or not next_href:
+                # 解析函数仍只检查导航区最后一个按钮，但允许“下一页”后带有
+                # 快捷键或箭头说明，例如“下一页（快捷键→）”。
+                next_href = find_next_page_href(html, selector)
+                if next_href is None:
                     break
 
                 next_url = normalize_url(urljoin(url, next_href))
+                # 某些站点在末页仍保留“下一页”，但 href 指回当前页。它表示
+                # 已到末页，不应被当成下载失败；回到更早分页才是真正的循环。
+                if next_url == normalize_url(url):
+                    break
                 if next_url in visited_urls:
                     return FetchResult(
                         chapter_id=chapter.id,
@@ -325,6 +358,8 @@ class NovelCrawler:
                         error_type="pagination_loop",
                         error_message="检测到重复正文翻页 URL: {}".format(next_url),
                     )
+                # 后续分页显式以上一页作为 Referer，保持完整的分页导航链路。
+                referer = url
                 url = next_url
 
             # 只有所有分页都成功解析后才合并和验证正文。
