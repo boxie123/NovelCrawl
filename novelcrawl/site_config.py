@@ -23,7 +23,7 @@ SITE_CONFIGS: Dict[str, SiteConfig] = {
     ),
     "sudugu": SiteConfig(
         key="sudugu",
-        domains=("www.sudugu.org", "www.shudugu.org"),
+        domains=("www.sudugu.org", "www.shudugu.org", "www.sudugu.cc"),
         catalogue_selector="div#list li",
         catalogue_button_selector="",
         catalogue_title_selector="div.itemtxt h1 a",
@@ -32,7 +32,7 @@ SITE_CONFIGS: Dict[str, SiteConfig] = {
     ),
     "bqquge": SiteConfig(
         key="bqquge",
-        domains=("www.bqquge.com",),
+        domains=("www.bqquge.com", "www.bqquge.org"),
         catalogue_selector="div#list li",
         catalogue_button_selector="",
         catalogue_title_selector="div.booktxt h1",
