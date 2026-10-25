@@ -1,6 +1,6 @@
 """项目可预期异常。
 
-这些异常代表用户输入、站点解析或数据库版本等可说明的问题。CLI 会捕获
+这些异常代表用户输入、站点解析或数据库版本等可说明的问题。GUI 会捕获
 ``NovelCrawlError`` 并打印简洁提示，而不是向普通用户输出完整 traceback。
 """
 
@@ -46,7 +46,7 @@ class MergeEditionNotFound(NovelCrawlError):
 
 
 class InvalidChapterSpec(NovelCrawlError):
-    """CLI 章节范围表达式格式或取值无效。"""
+    """GUI 章节范围表达式格式或取值无效。"""
 
     pass
 

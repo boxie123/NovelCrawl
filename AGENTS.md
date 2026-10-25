@@ -4,7 +4,7 @@
 
 ## 开始工作前
 
-- 先阅读 `README.md`，确认命令行为和法律声明。
+- 先阅读 `README.md`，确认 GUI 行为和法律声明。
 - 执行 `git status --short`，保留用户已有改动，不要擅自重置工作树。
 - 优先使用 Python 标准库；引入新依赖前说明必要性。
 - 不要在测试中访问真实小说网站，也不要提交数据库、导出 TXT 或下载正文。
@@ -12,8 +12,13 @@
 ## 结构
 
 ```text
-main.py                    CLI 入口
-novelcrawl/cli.py          argparse 命令
+main.py                    GUI 启动入口
+novelcrawl/gui.py          本机 Uvicorn 与事件循环
+novelcrawl/web.py          FastAPI API 与静态资源
+novelcrawl/task_manager.py 串行任务调度与停止
+novelcrawl/storage_gateway.py 专用单线程写连接
+novelcrawl/browser_session.py 独占浏览器资源
+frontend/                  Vue 3 + TypeScript 页面与测试
 novelcrawl/services.py     下载与刷新编排
 novelcrawl/crawler.py      浏览器访问、目录和正文翻页
 novelcrawl/parsers.py      HTML 解析及标题规范化
@@ -21,24 +26,25 @@ novelcrawl/storage.py      SQLite schema 和事务
 novelcrawl/exporter.py     来源/合并版 TXT 原子导出
 novelcrawl/merge_service.py 合并业务
 novelcrawl/site_config.py  站点选择器
-tests/                     无网络单元测试
+tests/                     模拟单元测试与本地 HTTP/Chromium 验收
 ```
 
 ## 关键约束
 
 - SQLite 是正文与下载状态的唯一数据源。
-- Playwright 任务并发抓取，但数据库由主协程串行写入。
+- Playwright 任务并发抓取，但数据库由主协程通过 StorageGateway 专用单线程串行写入。
 - 一个成功章节的正文与 `completed` 状态必须在同一事务提交。
 - 普通续传只处理 `pending`、`failed`；刷新可处理任意章节。
 - 刷新失败时，已有 `completed` 正文和状态不得被清除。
 - 目录同步按 `(source_id, chapter_url)` 去重，不重置完成状态。
-- `--start-position` 同时限制本次进度统计、下载队列和来源 TXT 导出范围。
-- 一次下载或刷新任务结束后只导出一次 TXT，不得恢复为每批导出。
+- 起始位置 同时限制本次进度统计、下载队列和来源 TXT 导出范围。
+- 一次下载或刷新正常跑完后只导出一次 TXT；主动停止和目录/预访问失败不自动导出，不得恢复为每批导出。
 - TXT 必须先写同目录临时文件，再用 `os.replace()` 原子替换。
 - 合并版本只引用 `chapters.id`，不得复制或覆盖来源正文。
 - `books/` 是旧版文件目录，新代码不得自动修改。
 - 单章异常必须转换为失败结果，不得取消同批其他章节。
-- 不带参数时 CLI 只显示帮助，不得恢复交互模式。
+- main 仅保留 GUI 入口，CLI 版本保存在 cli 分支。
+- 停止通过关闭 Browser 中断请求，不直接取消 Playwright 协程；完成事务必须确认，清理失败阻断后续调度。
 
 ## 数据库
 
@@ -51,7 +57,7 @@ tests/                     无网络单元测试
 
 ## 编码约定
 
-- 目标版本为 Python 3.9+，不要使用仅在更高版本可用的语法。
+- 目标版本为 Python 3.12+；前端采用 Vue 3 + TypeScript。
 - 模块职责保持单一：爬虫不写数据库，存储层不抓网页，导出层不修改下载状态。
 - 公共方法和不直观的事务、重试、原子写入逻辑使用简短中文注释或 docstring。
 - URL 作为来源和章节身份时必须先规范化；不要用易变化的章节标题去重。
@@ -61,16 +67,18 @@ tests/                     无网络单元测试
 ## 测试
 
 ```powershell
-python -m unittest discover -v
+uv run python -m unittest discover -v
 ```
 
 提交实现前至少执行：
 
 ```powershell
-python -m unittest discover -v
-python -m compileall -q main.py novelcrawl tests
+uv run python -m unittest discover -v
+uv run python -m compileall -q main.py novelcrawl tests
 git diff --check
 ```
+
+另须在 frontend 执行 `npm.cmd run typecheck`、`npm.cmd test` 和 `npm.cmd run build`。集成验收使用构建产物和本地 Chromium。
 
 测试使用临时 SQLite 数据库，不得访问真实网站。修改以下行为时必须增加回归测试：
 
@@ -79,7 +87,9 @@ git diff --check
 - 失败重试及刷新失败保留正文
 - TXT 原子导出和失败占位
 - 跨来源合并引用
-- CLI 参数解析
+- 任务参数校验、同源检查和队列状态
+- 停止竞态、浏览器回收与原子提交
+- 前端表单、轮询和断连状态
 
 ## 合规与安全
 

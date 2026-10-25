@@ -2,7 +2,7 @@
 
 ``@dataclass`` 会根据字段自动生成初始化函数和便于调试的字符串表示。
 ``frozen=True`` 表示对象创建后字段不可修改，可避免一个模块无意中改变另一个
-模块正在使用的数据。这里没有使用 ``slots=True``，以保持 Python 3.9 兼容。
+模块正在使用的数据。数据模型同时供存储层、抓取层和 API 使用。
 """
 
 from dataclasses import dataclass

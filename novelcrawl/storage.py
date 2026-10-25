@@ -19,6 +19,7 @@
 import hashlib
 import re
 import sqlite3
+from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
 
@@ -172,9 +173,10 @@ class Storage:
     连接。测试也使用这种明确的生命周期，避免连接泄漏。
     """
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, *, read_only: bool = False):
         """记录数据库路径；实际连接延迟到 ``open`` 时创建。"""
         self.db_path = Path(db_path)
+        self.read_only = read_only
         self.connection: Optional[sqlite3.Connection] = None
 
     def open(self) -> None:
@@ -188,11 +190,15 @@ class Storage:
             journal_mode=WAL: 使用预写日志，提高读写并存时的稳定性。
             busy_timeout: 数据库短暂被占用时最多等待 5 秒，而非立即报错。
         """
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(str(self.db_path))
+        if self.read_only:
+            connection = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(str(self.db_path))
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
+        if not self.read_only:
+            connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA busy_timeout = 5000")
         self.connection = connection
 
@@ -205,7 +211,11 @@ class Storage:
     def __enter__(self):
         """实现 ``with Storage(...) as storage`` 的进入逻辑。"""
         self.open()
-        self.initialize()
+        try:
+            self.initialize()
+        except BaseException:
+            self.close()
+            raise
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -229,7 +239,7 @@ class Storage:
         """
         connection = self._connection()
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version == 0:
+        if version == 0 and not self.read_only:
             # executescript 用于一次执行整份建表脚本。首次建库若因磁盘、权限
             # 或 SQL 错误中断，SQLite 不保证此前所有 DDL 都自动回滚，可能
             # 留下不完整的新数据库；当前第一版不做迁移或自动修复。
@@ -262,7 +272,7 @@ class Storage:
             可直接用作文件名且在该表中唯一的名称。冲突时依次添加 ``_2``、
             ``_3`` 等后缀。
 
-        ``table`` 只由本模块传入固定表名，不接受 CLI 原始输入；查询值仍使用
+        ``table`` 只由本模块传入固定表名，不接受 GUI 原始输入；查询值仍使用
         ``?`` 参数绑定，避免把文本拼进 SQL。
         """
         connection = self._connection()
@@ -713,6 +723,7 @@ class Storage:
         *,
         description: Optional[str] = None,
         output_name: Optional[str] = None,
+        control=None,
     ) -> int:
         """创建一个空合并版本。
 
@@ -737,6 +748,8 @@ class Storage:
                 """,
                 (name, unique_output_name, description),
             )
+            if control:
+                control.reserve_commit()
             return int(cursor.lastrowid)
 
     def get_merged_edition(self, edition_id: int) -> MergedEdition:
@@ -891,7 +904,7 @@ class Storage:
             ChapterNotFound: 未提供 part，或某个来源位置不能唯一匹配章节。
 
         数据库最终保存稳定的 chapter.id，而不是可能因目录调整而变化的
-        position。position 仅用于 CLI 输入阶段查找章节。
+        position。position 仅用于 GUI 输入阶段查找章节。
         """
         self.get_merged_edition(edition_id)
         if not source_positions:
@@ -993,3 +1006,160 @@ class Storage:
             """,
             (edition_id,),
         ).fetchall()
+
+    def list_source_summaries(self):
+        """一次聚合读取书库进度，不在列表中传输正文。"""
+        return [dict(row) for row in self._connection().execute(
+            """SELECT s.*, COUNT(c.id) total,
+            COALESCE(SUM(c.status='completed'),0) completed,
+            COALESCE(SUM(c.status='pending'),0) pending,
+            COALESCE(SUM(c.status='failed'),0) failed
+            FROM sources s LEFT JOIN chapters c ON c.source_id=s.id
+            GROUP BY s.id ORDER BY s.updated_at DESC, s.id DESC"""
+        )]
+
+    def source_detail(self, source_id):
+        source = asdict(self.get_source(source_id))
+        source['progress'] = asdict(self.get_progress(source_id))
+        return source
+
+    def chapter_page(self, source_id, page=1, page_size=50, status=None):
+        """同一读取事务内取得总数和摘要；稳定排序避免同位置随机跳动。"""
+        self.get_source(source_id)
+        clause = 'source_id=?'
+        args = [source_id]
+        if status:
+            clause += ' AND status=?'
+            args.append(status)
+        total = self._connection().execute(
+            'SELECT COUNT(*) FROM chapters WHERE ' + clause, args
+        ).fetchone()[0]
+        rows = self._connection().execute(
+            'SELECT id,source_id,position,catalogue_title,normalized_title,status,'
+            'last_error_type,last_error FROM chapters WHERE ' + clause +
+            ' ORDER BY position,id LIMIT ? OFFSET ?',
+            args + [page_size, (page - 1) * page_size],
+        )
+        return {'items': [dict(row) for row in rows], 'total': total,
+                'page': page, 'page_size': page_size}
+
+    def chapter_preview(self, chapter_id):
+        """正文与相邻章节身份在同一只读快照中返回，不预读相邻正文。"""
+        chapter = self.get_chapter(chapter_id)
+        result = asdict(chapter)
+        for name, comparison, direction in (('previous_id', '<', 'DESC'), ('next_id', '>', 'ASC')):
+            row = self._connection().execute(
+                f'SELECT id FROM chapters WHERE source_id=? AND (position,id) {comparison} (?,?) '
+                f'ORDER BY position {direction},id {direction} LIMIT 1',
+                (chapter.source_id, chapter.position, chapter.id),
+            ).fetchone()
+            result[name] = row['id'] if row else None
+        return result
+
+    def chapter_ids(self, source_id, positions=None):
+        """提交任务时将目录位置固化为身份，拒绝缺失或歧义位置。"""
+        self.get_source(source_id)
+        rows = list(self._connection().execute(
+            'SELECT id,position FROM chapters WHERE source_id=? ORDER BY position,id',
+            (source_id,),
+        ))
+        if positions is None:
+            return [row['id'] for row in rows]
+        mapping = {}
+        for row in rows:
+            mapping.setdefault(row['position'], []).append(row['id'])
+        result = []
+        for position in positions:
+            matches = mapping.get(position, [])
+            if len(matches) != 1:
+                raise ChapterNotFound(f'目录位置 {position} 不存在或不唯一')
+            result.append(matches[0])
+        return result
+
+    def chapters_by_ids(self, ids, source_id=None):
+        """抓取与引用校验只取摘要；避免整本已完成正文进入任务内存。"""
+        mapping = {}
+        unique_ids = list(dict.fromkeys(ids))
+        for offset in range(0, len(unique_ids), 900):
+            batch = unique_ids[offset:offset+900]
+            rows = self._connection().execute(
+                'SELECT id,source_id,chapter_url,position,catalogue_title,normalized_title,'
+                'status,NULL content,last_error_type,last_error FROM chapters WHERE id IN (' +
+                ','.join('?' for _ in batch) + ')', batch,
+            )
+            mapping.update((row['id'], self._chapter_from_row(row)) for row in rows)
+        if any(chapter_id not in mapping for chapter_id in ids):
+            raise ChapterNotFound('选择的章节已不存在')
+        chapters = [mapping[chapter_id] for chapter_id in ids]
+        if source_id is not None and any(c.source_id != source_id for c in chapters):
+            raise ChapterNotFound('选择的章节不属于该来源')
+        return chapters
+
+    def edition_page(self, edition_id, page=1, page_size=50):
+        edition = asdict(self.get_merged_edition(edition_id))
+        connection = self._connection()
+        total = connection.execute(
+            'SELECT COUNT(*) FROM merged_chapters WHERE edition_id=?', (edition_id,)
+        ).fetchone()[0]
+        items = []
+        for row in connection.execute(
+            'SELECT id,position,title FROM merged_chapters WHERE edition_id=? '
+            'ORDER BY position,id LIMIT ? OFFSET ?',
+            (edition_id, page_size, (page-1)*page_size),
+        ):
+            item = dict(row)
+            item['parts'] = [dict(part) for part in connection.execute(
+                'SELECT c.id,c.source_id,c.position,c.normalized_title,c.status '
+                'FROM merged_chapter_parts p JOIN chapters c ON c.id=p.source_chapter_id '
+                'WHERE p.merged_chapter_id=? ORDER BY p.part_order', (row['id'],)
+            )]
+            items.append(item)
+        return {'edition': edition, 'items': items, 'total': total,
+                'page': page, 'page_size': page_size}
+
+    def merge_from_ids(self, edition_id, chapter_ids, *, compose=False, title=None, control=None):
+        """按稳定 ID 原子追加；停止发生在提交许可前则整笔回滚。"""
+        self.get_merged_edition(edition_id)
+        chapters = self.chapters_by_ids(chapter_ids)
+        if not chapters:
+            raise ChapterNotFound('至少选择一个章节')
+        connection = self._connection()
+        with connection:
+            position = self._next_merged_position(edition_id)
+            groups = [chapters] if compose else [[chapter] for chapter in chapters]
+            for offset, parts in enumerate(groups):
+                if control:
+                    control.check()
+                chapter_title = title if compose else (parts[0].normalized_title or parts[0].catalogue_title)
+                cursor = connection.execute(
+                    'INSERT INTO merged_chapters(edition_id,position,title) VALUES (?,?,?)',
+                    (edition_id, position+offset, chapter_title),
+                )
+                for order, chapter in enumerate(parts, 1):
+                    if control:
+                        control.check()
+                    connection.execute(
+                        'INSERT INTO merged_chapter_parts(merged_chapter_id,source_chapter_id,part_order,separator) '
+                        'VALUES (?,?,?,?)', (cursor.lastrowid, chapter.id, order, '' if order == 1 else '\n\n'),
+                    )
+            if control:
+                control.reserve_commit()
+        return len(groups)
+
+    def iter_source_export(self, source_id, start_position=None):
+        self.get_source(source_id)
+        return self._connection().execute(
+            'SELECT * FROM chapters WHERE source_id=? AND position>=? ORDER BY position,id',
+            (source_id, start_position or 1),
+        )
+
+    def iter_merged_export(self, edition_id):
+        self.get_merged_edition(edition_id)
+        return self._connection().execute(
+            """SELECT mc.id merged_chapter_id, mc.position merged_position, mc.title merged_title,
+            p.part_order,p.separator,c.id source_chapter_id,c.source_id,c.position source_position,
+            c.catalogue_title,c.normalized_title,c.content,c.status,c.last_error_type,c.last_error
+            FROM merged_chapters mc LEFT JOIN merged_chapter_parts p ON p.merged_chapter_id=mc.id
+            LEFT JOIN chapters c ON c.id=p.source_chapter_id WHERE mc.edition_id=?
+            ORDER BY mc.position,mc.id,p.part_order""", (edition_id,)
+        )

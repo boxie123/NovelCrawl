@@ -26,6 +26,7 @@ from playwright.async_api import (
 )
 
 from novelcrawl.errors import PageNavigationError
+from novelcrawl.control import RunControl, RunStopped
 from novelcrawl.models import (
     CatalogueChapter,
     ChapterRecord,
@@ -87,6 +88,7 @@ class NovelCrawler:
         *,
         catalogue_url: Optional[str] = None,
         navigation_retries: int = 5,
+        control=None,
     ):
         """保存浏览器上下文和站点规则，不会立即创建标签页。"""
         self.context = context
@@ -95,6 +97,21 @@ class NovelCrawler:
             normalize_url(catalogue_url) if catalogue_url else None
         )
         self.navigation_retries = navigation_retries
+        self.control = control or RunControl()
+
+    async def _parse(self, function, *args, **kwargs):
+        """纯 HTML 解析离开事件循环；停止后迟到结果不继续驱动抓取。"""
+        self.control.check()
+        result = await asyncio.to_thread(function, *args, **kwargs)
+        self.control.check()
+        return result
+
+    async def _close_page(self, page):
+        try:
+            await page.close()
+        except Exception:
+            if not self.control.stopped.is_set():
+                logger.debug('页面关闭失败，由会话统一回收', exc_info=True)
 
     async def _recover_temporary_error_page(
         self,
@@ -109,12 +126,13 @@ class NovelCrawler:
         链接。``navigation_retries`` 包含第一次打开页面：默认值 5 表示首次
         访问失败后，最多再点击刷新链接 4 次。
         """
-        message = _temporary_error_page_message(html)
+        message = await self._parse(_temporary_error_page_message, html)
         if message is None:
             return html
 
         last_error = RuntimeError("网站返回临时错误页: {}".format(message))
         for refresh_attempt in range(2, self.navigation_retries + 1):
+            self.control.check()
             logger.warning(
                 "检测到网站临时错误页，正在点击刷新链接：url=%s attempt=%s/%s",
                 url,
@@ -130,10 +148,11 @@ class NovelCrawler:
                         "网站返回临时错误页，但没有找到可点击的刷新链接"
                     )
                     break
+                self.control.check()
                 await refresh_link.click()
                 await page.wait_for_load_state("domcontentloaded")
                 html = await page.content()
-                message = _temporary_error_page_message(html)
+                message = await self._parse(_temporary_error_page_message, html)
                 if message is None:
                     return html
                 last_error = RuntimeError("网站仍返回临时错误页: {}".format(message))
@@ -142,7 +161,7 @@ class NovelCrawler:
 
             if refresh_attempt < self.navigation_retries:
                 # 连续点击过快可能加重站点限流，沿用导航失败时的等待间隔。
-                await asyncio.sleep(5.0)
+                await self.control.wait(5.0)
 
         raise PageNavigationError(
             "{} 获取失败，点击页面刷新链接后仍未恢复: {}".format(
@@ -177,6 +196,7 @@ class NovelCrawler:
         """
         last_error = None
         for attempt in range(1, self.navigation_retries + 1):
+            self.control.check()
             try:
                 response = await page.goto(
                     url,
@@ -197,7 +217,7 @@ class NovelCrawler:
 
             if attempt < self.navigation_retries:
                 # 最后一次失败后直接抛错，不再进行无意义等待。
-                await asyncio.sleep(5.0)
+                await self.control.wait(5.0)
 
         if isinstance(last_error, PlaywrightTimeoutError):
             raise last_error
@@ -209,11 +229,12 @@ class NovelCrawler:
         本方法只确认页面能够正常取得，不解析目录，也不写数据库。标签页始终
         在结束时关闭，但 Context 级 Cookie 会保留给随后创建的章节标签页。
         """
+        self.control.check()
         page = await self.context.new_page()
         try:
             await self._page_goto(page, normalize_url(url))
         finally:
-            await page.close()
+            await self._close_page(page)
 
     async def fetch_catalogue(
         self,
@@ -231,12 +252,14 @@ class NovelCrawler:
         因而解析逻辑可以在不启动浏览器的单元测试中验证。
         """
         html_pages = []
+        self.control.check()
         page = await self.context.new_page()
         visited_urls: Set[str] = set()
         url = normalize_url(catalogue_url)
 
         try:
             while True:
+                self.control.check()
                 # 防止站点的“下一页”按钮错误地指回已经访问的目录页。
                 if url in visited_urls:
                     break
@@ -250,8 +273,7 @@ class NovelCrawler:
                 if not selector:
                     break
 
-                soup = BeautifulSoup(html, "lxml")
-                buttons = soup.select(selector)
+                buttons = await self._parse(lambda: BeautifulSoup(html, "lxml").select(selector))
                 if not buttons:
                     break
 
@@ -266,10 +288,10 @@ class NovelCrawler:
                 url = next_url
         finally:
             # 即使目录解析或网络访问抛错，也必须关闭当前标签页。
-            await page.close()
+            await self._close_page(page)
 
-        return parse_catalogue(
-            html_pages,
+        return await self._parse(
+            parse_catalogue, html_pages,
             catalogue_url=catalogue_url,
             config=self.config,
         )
@@ -300,8 +322,10 @@ class NovelCrawler:
         page_texts = []
 
         try:
+            self.control.check()
             page = await self.context.new_page()
             while True:
+                self.control.check()
                 # visited_urls 防止错误翻页链接形成死循环。
                 if url in visited_urls:
                     return FetchResult(
@@ -318,8 +342,8 @@ class NovelCrawler:
                     url,
                     referer=referer,
                 )
-                page_text = parse_chapter_text(
-                    html,
+                page_text = await self._parse(
+                    parse_chapter_text, html,
                     self.config.novel_selector,
                 )
                 if page_text is None:
@@ -341,7 +365,7 @@ class NovelCrawler:
 
                 # 解析函数仍只检查导航区最后一个按钮，但允许“下一页”后带有
                 # 快捷键或箭头说明，例如“下一页（快捷键→）”。
-                next_href = find_next_page_href(html, selector)
+                next_href = await self._parse(find_next_page_href, html, selector)
                 if next_href is None:
                     break
 
@@ -363,8 +387,8 @@ class NovelCrawler:
                 url = next_url
 
             # 只有所有分页都成功解析后才合并和验证正文。
-            content = "".join(page_texts)
-            error_type, error_message = validate_chapter_content(content)
+            content = await self._parse("".join, page_texts)
+            error_type, error_message = await self._parse(validate_chapter_content, content)
             if error_type:
                 return FetchResult(
                     chapter_id=chapter.id,
@@ -379,7 +403,10 @@ class NovelCrawler:
                 title=title,
                 content=content,
             )
+        except RunStopped:
+            raise
         except PlaywrightTimeoutError as exc:
+            self.control.check()
             return FetchResult(
                 chapter_id=chapter.id,
                 title=title,
@@ -388,6 +415,7 @@ class NovelCrawler:
                 error_message=str(exc),
             )
         except (PlaywrightError, PageNavigationError) as exc:
+            self.control.check()
             return FetchResult(
                 chapter_id=chapter.id,
                 title=title,
@@ -396,6 +424,7 @@ class NovelCrawler:
                 error_message=str(exc),
             )
         except Exception as exc:
+            self.control.check()
             # exception() 会自动附带当前 except 上下文的完整 traceback。
             logger.exception(
                 "抓取章节时发生未预期错误：chapter_id=%s url=%s",
@@ -414,7 +443,7 @@ class NovelCrawler:
         finally:
             if page is not None:
                 try:
-                    await page.close()
+                    await self._close_page(page)
                 except Exception:
                     # 关闭标签页失败不应覆盖前面已经形成的抓取结果或错误。
                     pass

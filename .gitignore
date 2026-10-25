@@ -114,6 +114,11 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venv-cli-backup/
+node_modules/
+frontend/dist/
+playwright-report/
+test-results/
 env/
 venv/
 ENV/

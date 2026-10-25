@@ -16,6 +16,14 @@ from novelcrawl.services import DownloadService, normalize_browser_user_agent
 from tests.helpers import StorageTestCase
 
 
+class InlineGateway:
+    """单元测试专用：让既有同步造数连接留在原线程；生产使用 StorageGateway。"""
+    def __init__(self, storage):
+        self.storage = storage
+    async def call(self, method, *args, **kwargs):
+        return getattr(self.storage, method)(*args, **kwargs)
+
+
 class FakeCrawler:
     """模拟单章抓取器：第二章抛异常，其他章节成功。"""
 
@@ -136,7 +144,7 @@ class DownloadServiceTests(StorageTestCase):
             config.source_export_dir,
             config.merged_export_dir,
         )
-        service = DownloadService(self.storage, exporter, config)
+        service = DownloadService(InlineGateway(self.storage), config)
 
         # 执行：_run_batch 是 async 函数。普通 unittest 测试方法不是 async，
         # 因此使用 asyncio.run 创建事件循环并等待它执行完成。
@@ -162,8 +170,8 @@ class DownloadServiceTests(StorageTestCase):
         self.assertIn("模拟单章异常", failed.last_error)
         self.assertIn("logs/novelcrawl.log", failed.last_error)
 
-    def test_download_exports_once_and_respects_start_position(self):
-        """多批下载应只导出一次，且位置 1 不进入位置 2 起始的 TXT。"""
+    def test_service_respects_start_position_and_leaves_export_to_runner(self):
+        """服务不自行导出，且位置 1 不进入位置 2 起始的 TXT。"""
         # 准备：batch_size=1 会把位置 2、3 拆成两个批次。如果实现错误地
         # 每批导出，CountingExporter 的计数会变成 2。
         config = AppConfig(
@@ -180,8 +188,7 @@ class DownloadServiceTests(StorageTestCase):
             config.merged_export_dir,
         )
         service = SessionlessDownloadService(
-            self.storage,
-            exporter,
+            InlineGateway(self.storage),
             config,
         )
 
@@ -194,7 +201,8 @@ class DownloadServiceTests(StorageTestCase):
         )
 
         # assertEqual(..., 1) 是对“整次任务只导出一次”的直接回归保护。
-        self.assertEqual(exporter.source_export_count, 1)
+        self.assertEqual(exporter.source_export_count, 0)
+        exporter.export_source(source_id, start_position=2)
         progress = self.storage.get_progress(
             source_id,
             start_position=2,
@@ -246,9 +254,9 @@ class DownloadServiceTests(StorageTestCase):
             config.source_export_dir,
             config.merged_export_dir,
         )
-        service = WarmupDownloadService(self.storage, exporter, config)
+        service = WarmupDownloadService(InlineGateway(self.storage), config)
 
-        asyncio.run(service.refresh_source(source_id, positions=[1]))
+        asyncio.run(service.refresh_source(source_id, chapter_ids=self.storage.chapter_ids(source_id, [1])))
 
         self.assertEqual(
             service.fake_crawler.events[0],

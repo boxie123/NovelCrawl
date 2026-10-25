@@ -1,6 +1,6 @@
-"""兼容入口：把仓库根目录运行方式转交给包内 CLI。"""
+"""GUI 入口：启动本地服务并打开默认浏览器。"""
 
-from novelcrawl.cli import main
+from novelcrawl.gui import main
 
 
 if __name__ == "__main__":

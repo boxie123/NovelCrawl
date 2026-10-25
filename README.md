@@ -1,150 +1,85 @@
 # NovelCrawl
 
-基于 Playwright、BeautifulSoup 和 SQLite 的异步小说下载器。SQLite 保存完整章节正文并作为唯一数据源，TXT 是可重复生成的阅读文件。
+使用 Vue 3 + TypeScript、FastAPI 和 Playwright 的中文本地小说管理工具。SQLite 保存正文与下载状态，TXT 是可重复生成的导出结果。仅供本机、单用户使用。
 
-## 功能
+`main` 分支仅保留 GUI 入口；改造前的命令行版本保存在 `cli` 分支。
 
-- 按章节持久化，程序中断后自动续传
-- 新章节优先、失败章节自动重试
-- 手动刷新指定章节或全部章节
-- 刷新成功直接覆盖正文，刷新失败保留已有正文
-- TXT 按目录顺序导出，并为失败/未下载章节生成占位
-- 不同网站来源独立管理
-- 支持把不同来源的指定章节组合为独立合并版本
-- 并发抓取、串行事务写库
+## 安装与启动
 
-## 项目数据
+要求 Python 3.12+；源码构建另需 Node.js 22.12+ 和 npm。前端资源全部本地打包，运行时不依赖 Node.js 或 CDN。
+
+```powershell
+cd frontend
+npm.cmd ci
+npm.cmd run build
+cd ..
+uv sync
+uv run playwright install chromium
+uv run python main.py
+```
+
+也可以通过 `uv run novelcrawl` 启动。服务仅监听 `http://127.0.0.1:8765`，就绪后自动打开浏览器。端口占用会明确报错，不会连接其他进程或自动换端口。请从项目目录运行。安装的 wheel 内含前端产物。
+
+关闭网页后任务继续运行，重新打开上述地址即可查看。在启动终端按 Ctrl+C 停止任务并退出服务。重启后手动续传，内存中的排队任务与历史不会恢复。首次 Ctrl+C 等待资源收尾；强制终止进程不保证完整清理。
+
+若当前机器的 uv 默认目录不可用，可在当前 PowerShell 会话使用工作区目录（不更改全局配置）：
+
+```powershell
+$env:UV_CACHE_DIR = Join-Path $PWD '.cache\uv'
+$env:UV_PYTHON_INSTALL_DIR = Join-Path $PWD '.cache\python'
+$env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $PWD '.cache\browsers'
+```
+
+启动器会识别项目内已有的 `.cache/browsers`。其他 Python 环境也可安装项目依赖并运行；源码安装前须先构建前端。
+
+## 使用
+
+- **来源书库**：输入支持站点的目录 URL 下载。设置本次起始位置和并发数，查看各来源持久化总进度。
+- **来源详情**：同步目录并续传、按状态分页浏览目录、纯文本预览正文、刷新选中章节/范围/全部章节、手动导出完整来源。
+- **任务中心**：查看本次计划、已处理、成功和失败数量，以及等待阶段、错误、导出文件。点击“停止全部”停止运行和排队任务。
+- **合并版本**：创建名称、说明与输出文件名，连续范围追加，按点击顺序组合来自不同来源的章节（允许重复引用），设置自定义标题并导出。合并版本保存章节 ID 引用，来源刷新后导出使用最新正文。
+
+默认并发 3，允许每次设置 1～5；批间等待 10 秒。提高并发会提高请求速率，应遵守目标站点规则。刷新先预访问来源目录建立会话；预访问失败不发起正文请求。
+
+本次起始位置同时限制下载队列、统计和自动导出范围。**局部自动导出仍替换该来源原有 TXT**；需要完整文件时，使用“导出完整来源”。普通续传只处理未下载和失败章节，不重复请求已完成正文。
+
+查询与正文预览可在任务运行时使用。下载、刷新、导出及合并修改按队列串行执行，同一来源/版本已有任务时拒绝重复提交。队列最多 100 项，保留最近 100 个已结束任务摘要。关闭浏览器不会丢失队列；服务断连时界面显示“连接中断”，不会推断任务失败。
+
+目录支持页码选择、首末页、输入页码后按 Enter 或点击“跳转”，以及每页 25/50/100/200 章。调整每页数量保留原浏览位置；后台更新不重置页码，筛选结果缩减时自动回到有效页。跨页勾选保留选择，更改状态筛选会清空选择。正文预览可按来源目录顺序切换上一章/下一章。
+
+## 数据与停止语义
 
 ```text
 data/novelcrawl.db       SQLite 数据库（运行时创建）
-exports/sources/         单来源 TXT
-exports/merged/          合并版本 TXT
-books/                   旧版 TXT；新版本不会读取或覆盖
+exports/sources/        单来源 TXT
+exports/merged/         合并版本 TXT
+logs/novelcrawl.log     错误详情
+books/                 旧版文件；不会自动读取、导入、删除或覆盖
 ```
 
-## 安装
+- 正文、哈希和完成状态在同一事务中提交；SQLite schema 固定为 v1，不支持的版本直接报错，不自动迁移。
+- 章节并发抓取，数据库使用专用单线程串行写入；单章异常不取消同批其他章节。刷新失败或停止保留已有完成正文。
+- 正常跑完下载/刷新只导出一次，包括无待下载章节和部分章节失败。目录或预访问失败、主动停止不启动自动导出。
+- 停止立即关闭当前任务独占浏览器，中断请求并取消排队任务；不等待导航超时，也不直接取消 Playwright 协程。已形成的完整结果可提交，半章与停止导致的错误不会写成成功或普通抓取失败。
+- 已进入数据库/文件提交阶段的操作确认实际结果，不能强杀线程或撤销已提交内容。资源清理失败会显示错误并阻止后续调度；没有固定毫秒级退出承诺。
+- TXT 分段写入唯一的同目录临时文件，最后通过 `os.replace()` 原子替换。写入取消保留旧文件，已经替换则保留完整新文件；失败/未完成章节生成占位。
 
-项目要求 Python 3.9 或更高版本。
-
-```powershell
-uv sync
-uv run playwright install chromium
-```
-
-也可以使用其他 Python 环境安装 `pyproject.toml` 中的依赖。
-
-## 命令
-
-查看帮助：
+## 开发与验收
 
 ```powershell
-uv run python main.py --help
-```
-
-添加来源或同步目录后自动续传：
-
-```powershell
-uv run python main.py download "https://www.sudugu.org/1811/"
-```
-
-从指定目录位置开始本次下载：
-
-```powershell
-uv run python main.py download "https://www.sudugu.org/1811/" --start-position 500
-```
-
-临时调整本次任务的章节并发数（允许 1～5，默认 3）：
-
-```powershell
-uv run python main.py download "https://www.sudugu.org/1811/" --concurrency 2
-uv run python main.py resume 1 --concurrency 1
-```
-
-并发数同时决定每批处理的章节数；每批之间仍按默认设置等待 10 秒。提高
-并发数会提高整体请求速率，应根据目标网站规则和响应情况谨慎使用。
-
-指定 `--start-position` 后，本次进度统计、待下载队列和 TXT 导出均从该目录位置开始，不包含更早的章节。未指定时处理和导出整个来源。
-
-按来源 ID 续传：
-
-```powershell
-uv run python main.py resume 1
-```
-
-查看进度：
-
-```powershell
-uv run python main.py status
-uv run python main.py status 1
-```
-
-刷新指定章节：
-
-```powershell
-uv run python main.py refresh 1 --chapters "100-120,125"
-uv run python main.py refresh 1 --all
-uv run python main.py refresh 1 --chapters "100-120" --concurrency 1
-```
-
-刷新会先预访问一次来源目录页，在同一浏览器会话中建立 Cookie；章节第一页
-使用目录 URL 作为 Referer，正文后续分页使用上一页 URL 作为 Referer。目录
-预访问失败时会停止刷新，不继续产生一批无效章节请求。
-
-重新导出 TXT：
-
-```powershell
-uv run python main.py export 1
-```
-
-### 合并版本
-
-创建：
-
-```powershell
-uv run python main.py merge create "狂徒！合并版"
-```
-
-把来源 1 的第 1～100 个目录章节一对一追加到合并版本 1：
-
-```powershell
-uv run python main.py merge append-range 1 --source 1 --chapters "1-100"
-```
-
-将多个来源章节组合为一个合并章节：
-
-```powershell
-uv run python main.py merge compose 1 `
-  --title "第一百零一章 完整版" `
-  --part 1:101 `
-  --part 2:101 `
-  --part 2:102
-```
-
-导出：
-
-```powershell
-uv run python main.py merge export 1
-```
-
-合并版本只保存来源章节引用。来源正文刷新后，下次导出会自动使用最新正文。
-
-## 数据安全语义
-
-- 正文、哈希和完成状态在同一个 SQLite 事务中提交。
-- 普通续传不会重新请求已完成章节。
-- 单章失败不会取消同批其他成功章节。
-- 一次下载或刷新任务结束后只导出一次 TXT，不会每批重复导出。
-- TXT 先写入临时文件，完成后再原子替换正式文件。
-- 第一版数据库版本固定为 `1`；遇到其他版本会停止，不自动迁移。
-- 旧 `books/` 目录中的 TXT 不会被自动导入、删除或覆盖。
-
-## 测试
-
-```powershell
+cd frontend
+npm.cmd run typecheck
+npm.cmd test
+npm.cmd run build
+cd ..
 uv run python -m unittest discover -v
+uv run python -m compileall -q main.py novelcrawl tests
+git diff --check
 ```
 
-测试使用临时数据库，不访问真实网站。
+测试使用临时 SQLite、模拟抓取器和本地 HTTP 服务器，不访问真实小说网站，不使用项目真实数据造数。集成测试需要已安装的 Chromium 和生产前端产物。若浏览器安装在项目缓存，测试前设置 `PLAYWRIGHT_BROWSERS_PATH` 如上。
+
+开发前端可用 `npm.cmd run dev`（代理 API 到 8765）；正式验收和使用均由 Python 提供构建后的同源页面。后端固定 Uvicorn 0.54.0，退出适配先停止抓取再收尾 HTTP 响应；升级该依赖时须重新验收退出行为。
 
 ## 法律声明
 
@@ -171,7 +106,7 @@ uv run python -m unittest discover -v
 项目保留以下默认限制，以降低误用及对目标服务器造成压力的风险：
 
 - **并发限制** — 默认每批最多 3 章并发请求。
-- **可控并发** — 网络命令可用 `--concurrency` 临时设置 1～5；提高并发会增加整体请求速率。
+- **可控并发** — GUI 的本次并发数可临时设置 1～5；提高并发会增加整体请求速率。
 - **请求间隔** — 默认批次间等待 10 秒。
 - **有限重试** — 页面导航和章节任务仅进行有限次数重试，持续失败会记录原因并停止本次尝试。
 - **避免重复请求** — 普通续传跳过已完成章节，减少对相同内容的重复访问。

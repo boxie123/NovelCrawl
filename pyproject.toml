@@ -1,13 +1,13 @@
 [project]
 name = "novelcrawl"
-version = "0.2.0"
+version = "0.3.0"
 description = "支持 SQLite 断点续传、刷新、导出与跨来源合并的小说下载器"
 authors = [
     { name = "铂屑", email = "80164656+boxie123@users.noreply.github.com" },
 ]
-dependencies = ["lxml>=6.0.0", "beautifulsoup4>=4.13.4", "playwright>=1.53.0", "playwright-stealth>=2.0.0"]
+dependencies = ["lxml>=6.0.0", "beautifulsoup4>=4.13.4", "playwright>=1.53.0", "playwright-stealth>=2.0.0", "fastapi>=0.129,<1", "uvicorn==0.54.0", "pydantic>=2.7,<3"]
 readme = "README.md"
-requires-python = ">= 3.9"
+requires-python = ">=3.12"
 
 [build-system]
 requires = ["hatchling"]
@@ -24,4 +24,13 @@ allow-direct-references = true
 packages = ["novelcrawl"]
 
 [project.scripts]
-novelcrawl = "novelcrawl.cli:main"
+novelcrawl = "novelcrawl.gui:main"
+
+[dependency-groups]
+dev = ["httpx>=0.28,<1"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"frontend/dist" = "novelcrawl/static"
+
+[tool.hatch.build.targets.sdist.force-include]
+"frontend/dist" = "frontend/dist"
